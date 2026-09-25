@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -123,6 +124,34 @@ async def test_interim_sends_are_status(live):
     assert (await server.next_frame())["kind"] == "status"
     await adapter.edit_message(CHAT_ID, sent.message_id, "Still working…")
     assert (await server.next_frame())["kind"] == "status"
+
+
+async def test_hermes_status_lines_are_status(live):
+    # gateway/run.py _send_or_update_status_coro carries memory-recall, compression and context
+    # warnings with no _interim_send marker; as kind "reply" the relay would save them as the
+    # character's reply.
+    adapter, server = live
+    await start_turn(adapter, server)
+    from gateway.run import _send_or_update_status_coro
+    result = await _send_or_update_status_coro(adapter, CHAT_ID, "k", "🧠 recalled 3 memories", None)
+    assert result.success is True
+    frame = await server.next_frame()
+    assert (frame["type"], frame["turnId"], frame["kind"], frame["content"]) == (
+        "send", TURN_ID, "status", "🧠 recalled 3 memories")
+
+
+async def test_platform_notices_are_status(live):
+    # gateway/run_notifications.py _deliver_platform_notice: operational notices ("No home channel
+    # is set", subagent failures) must not be saved as the character's reply either.
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    from gateway.run import GatewayRunner
+    runner = SimpleNamespace(_delivery_adapter_for=lambda source: adapter, config=None,
+                             _thread_metadata_for_source=lambda source: None)
+    await GatewayRunner._deliver_platform_notice(runner, event.source, "notice")
+    frame = await server.next_frame()
+    assert (frame["type"], frame["turnId"], frame["kind"], frame["content"]) == (
+        "send", TURN_ID, "status", "notice")
 
 
 @pytest.mark.parametrize("outcome,reason", [(ProcessingOutcome.SUCCESS, "done"),

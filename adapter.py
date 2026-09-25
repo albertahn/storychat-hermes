@@ -95,6 +95,12 @@ class StoryChatAdapter(BasePlatformAdapter):
         self._pin_guard = approvals_mod.PIN_GUARD
         self._sleep = asyncio.sleep  # tests replace these two
         self._rng = random.Random()
+        # Hermes delivers operational notices ("No home channel is set", subagent failures) with a
+        # plain send() unless notice_delivery is "private" (gateway/run_notifications.py
+        # _deliver_platform_notice); a plain send would be saved as the character's reply. "private"
+        # routes them to send_private_notice, which sends them as status. setdefault keeps an
+        # explicit choice in config.yaml.
+        self.config.extra.setdefault("notice_delivery", "private")
 
     # ── connection lifecycle (spec §9.4) ────────────────────────────────────
 
@@ -444,6 +450,23 @@ class StoryChatAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return await self._send_text(chat_id, content, reply_to, metadata, force_status=False)
+
+    async def send_or_update_status(self, chat_id: str, status_key: str, content: str, *,
+                                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """Hermes status lines (memory recall, compression, context warnings; gateway/run.py
+        _send_or_update_status_coro) are never the character's reply. Each one is a new status
+        message; status_key (Hermes' dedupe key) is not needed for that."""
+        return await self._send_text(chat_id, content, None, metadata, force_status=True)
+
+    async def send_private_notice(self, chat_id: str, user_id: Optional[str], content: str,
+                                  reply_to: Optional[str] = None,
+                                  metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """Operational notices (see notice_delivery in __init__) go out as status."""
+        return await self._send_text(chat_id, content, reply_to, metadata, force_status=True)
+
+    async def _send_text(self, chat_id: str, content: str, reply_to: Optional[str],
+                         metadata: Optional[Dict[str, Any]], *, force_status: bool) -> SendResult:
         turn = self._turns.get(chat_id)
         if turn is None:
             return SendResult(success=False, error="no active StoryChat turn for this chat")
@@ -454,7 +477,8 @@ class StoryChatAdapter(BasePlatformAdapter):
         if (reply_to is not None and reply_to != turn.message_id
                 and stop_turn_id != turn.turn_id and known_turn_id != turn.turn_id):
             return SendResult(success=False, error="no active StoryChat turn for this chat")
-        is_status = stop_turn_id is not None or (metadata or {}).get("_interim_send") is True
+        is_status = (force_status or stop_turn_id is not None
+                     or (metadata or {}).get("_interim_send") is True)
         kind = "status" if is_status else "reply"
         msg_id = uuid.uuid4().hex
         try:
