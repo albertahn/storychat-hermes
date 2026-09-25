@@ -290,6 +290,7 @@ class StoryChatAdapter(BasePlatformAdapter):
                 logger.debug("[%s] closing the websocket failed during disconnect", self.name,
                             exc_info=True)
         self._turns = {}
+        self._msg_kinds = {}
 
     async def _send_frame(self, frame: str) -> bool:
         ws = self._ws
@@ -395,14 +396,16 @@ class StoryChatAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=message_id)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        turn = next((t for t in self._turns.values() if t.message_id == event.message_id), None)
-        if turn is None:
+        turn = self._turns.get(event.source.chat_id)
+        if turn is None or turn.message_id != event.message_id:
             return
         self._turns.pop(turn.chat_id, None)
         self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != turn.turn_id}
         reason = _OUTCOME_REASONS.get(outcome, "error")
         logger.info("[%s] turn %s ended: %s", self.name, turn.turn_id, reason)
-        await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, reason))
+        if not await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, reason)):
+            logger.warning("[%s] could not send turn_end for turn %s (not connected)",
+                           self.name, turn.turn_id)
 
 
 # ── plugin registration (spec §9.1) ─────────────────────────────────────────
