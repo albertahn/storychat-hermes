@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import pytest
@@ -237,6 +238,23 @@ async def test_send_reply_to_a_prior_chunk_in_the_same_turn_succeeds(live):
                                          "kind": "reply"}
 
 
+async def test_stop_tracked_turns_skips_a_turn_that_already_ended(live):
+    # A stale-snapshot race: _stop_tracked_turns spawns _dispatch_stop against today's turn, but it
+    # runs a tick later. If the turn ended in between, it must not resurrect it or send /stop.
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    before = adapter.handle_message.await_count
+    adapter._stop_tracked_turns()  # schedules _dispatch_stop against the current turn object
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)  # ends it first
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "done"}
+    for _ in range(3):
+        await asyncio.sleep(0)  # let the stale _dispatch_stop task run to completion
+    assert adapter.handle_message.await_count == before  # no stray /stop was ever dispatched
+    assert adapter._turns.get(CHAT_ID) is None  # and the ended turn was not resurrected
+
+
 async def test_dispatch_stop_caps_stop_ids_at_256_entries():
     # R-T14: _stop_ids is never pruned by Hermes' own lifecycle, so a long-running gateway must
     # cap it itself, or every /stop ever sent would be kept in memory forever.
@@ -245,6 +263,7 @@ async def test_dispatch_stop_caps_stop_ids_at_256_entries():
     first_stop_id = last_stop_id = None
     for i in range(257):
         turn = _Turn(f"{i:032x}", CHAT_ID, MESSAGE_ID, "Mina", "Captain Rook")
+        adapter._turns[CHAT_ID] = turn  # _dispatch_stop now requires the turn to still be tracked
         before = set(adapter._stop_ids)
         await adapter._dispatch_stop(turn)  # idle: no _active_sessions entry for this chat
         (new_id,) = set(adapter._stop_ids) - before

@@ -381,6 +381,10 @@ class StoryChatAdapter(BasePlatformAdapter):
 
     async def _dispatch_stop(self, turn: _Turn) -> None:
         """Hermes has no cancel API: send it the /stop command it answers while a turn runs."""
+        if self._turns.get(turn.chat_id) is not turn:
+            # Scheduled from a stale snapshot (_stop_tracked_turns spawns this a tick before it
+            # runs): the turn already ended in between, so there is nothing left to stop.
+            return
         stop_id = uuid.uuid4().hex
         self._turns[turn.chat_id] = replace(turn, stop_requested=True)
         self._stop_ids[stop_id] = turn.turn_id
