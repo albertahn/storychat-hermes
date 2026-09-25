@@ -262,3 +262,15 @@ async def test_hands_off_to_hermes_after_ten_failed_reconnects(monkeypatch, stor
         assert fatal == [("storychat_unreachable", True)]
         assert len(adapter.slept) == 10
         await adapter.disconnect()
+
+
+async def test_disconnect_during_reconnect_closes_the_half_open_socket(monkeypatch, storychat_env):
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        server.silent_after_hello = True
+        await server.close_client(1011)
+        await wait_until(lambda: len(server.hellos) == 2)
+        await adapter.disconnect()
+        await asyncio.wait_for(server.connections[-1].wait_closed(), 3)

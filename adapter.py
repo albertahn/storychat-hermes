@@ -148,31 +148,38 @@ class StoryChatAdapter(BasePlatformAdapter):
                 True, lifecycle.BACKOFF_START_S, "storychat_unreachable",
                 f"could not reach StoryChat ({type(exc).__name__}); retrying")) from None
         try:
-            await ws.send(protocol.hello(PLUGIN_VERSION, self._effective_toolsets))
-            frame = protocol.parse_server_frame(
-                await asyncio.wait_for(ws.recv(), timeout=WELCOME_TIMEOUT_S))
-            if frame["type"] != "welcome":
-                raise protocol.ProtocolError(f"expected welcome, got {frame['type']}")
-        except ConnectionClosed as exc:
-            raise _ConnectFailed(lifecycle.classify_close(_close_code(exc))) from None
-        except protocol.ProtocolError:
-            await ws.close()
-            raise _ConnectFailed(lifecycle.classify_close(4400)) from None
-        except TimeoutError:
-            await ws.close()
-            raise _ConnectFailed(lifecycle.Verdict(
-                True, lifecycle.BACKOFF_START_S, "storychat_no_welcome",
-                "StoryChat did not answer hello within 10s; retrying")) from None
-        # Spec §9.3: otherwise Hermes would reject the owner, or DM a pairing code that the relay would
-        # save as the character's reply. Hermes matches its allowlist exactly, so keep the listed spelling.
-        user_id = next((u for u in cfg.allowed_users if u.lower() == frame["userId"].lower()), None)
-        if user_id is None:
-            await ws.close()
-            raise _ConnectFailed(lifecycle.Verdict(
-                False, 0.0, "storychat_user_not_allowed", NOT_ALLOWED_MSG.format(user_id=frame["userId"])))
-        self._ws, self._user_id = ws, user_id
-        logger.info("[%s] connected (connId=%s userId=%s)", self.name, frame["connId"], frame["userId"])
-        self._mark_connected()
+            try:
+                await ws.send(protocol.hello(PLUGIN_VERSION, self._effective_toolsets))
+                frame = protocol.parse_server_frame(
+                    await asyncio.wait_for(ws.recv(), timeout=WELCOME_TIMEOUT_S))
+                if frame["type"] != "welcome":
+                    raise protocol.ProtocolError(f"expected welcome, got {frame['type']}")
+            except ConnectionClosed as exc:
+                raise _ConnectFailed(lifecycle.classify_close(_close_code(exc))) from None
+            except protocol.ProtocolError:
+                await ws.close()
+                raise _ConnectFailed(lifecycle.classify_close(4400)) from None
+            except TimeoutError:
+                await ws.close()
+                raise _ConnectFailed(lifecycle.Verdict(
+                    True, lifecycle.BACKOFF_START_S, "storychat_no_welcome",
+                    "StoryChat did not answer hello within 10s; retrying")) from None
+            # Spec §9.3: otherwise Hermes would reject the owner, or DM a pairing code that the relay would
+            # save as the character's reply. Hermes matches its allowlist exactly, so keep the listed spelling.
+            user_id = next((u for u in cfg.allowed_users if u.lower() == frame["userId"].lower()), None)
+            if user_id is None:
+                await ws.close()
+                raise _ConnectFailed(lifecycle.Verdict(
+                    False, 0.0, "storychat_user_not_allowed", NOT_ALLOWED_MSG.format(user_id=frame["userId"])))
+            self._ws, self._user_id = ws, user_id
+            logger.info("[%s] connected (connId=%s userId=%s)", self.name, frame["connId"], frame["userId"])
+            self._mark_connected()
+        except BaseException:
+            try:
+                await ws.close()
+            except Exception:
+                logger.debug("[%s] closing an unfinished StoryChat session failed", self.name, exc_info=True)
+            raise
 
     async def _run(self) -> None:
         """Read frames until the socket closes, then reconnect on this same instance."""

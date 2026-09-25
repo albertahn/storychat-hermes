@@ -68,10 +68,11 @@ def make_adapter():
 class FakeStoryChat:
     """An in-process stand-in for the StoryChat relay (design spec §6), built on websockets.serve."""
 
-    def __init__(self, *, upgrade_status=None, location=None, close_on_hello=None):
+    def __init__(self, *, upgrade_status=None, location=None, close_on_hello=None, silent_after_hello=False):
         self.upgrade_status = upgrade_status
         self.location = location
         self.close_on_hello = close_on_hello
+        self.silent_after_hello = silent_after_hello
         self.requests = []
         self.hellos = []
         self.connections = []
@@ -95,6 +96,9 @@ class FakeStoryChat:
             self.hellos.append(json.loads(await ws.recv()))
             if self.close_on_hello is not None:
                 await ws.close(self.close_on_hello, "closed by fake")
+                return
+            if self.silent_after_hello:
+                await ws.wait_closed()
                 return
             await ws.send(json.dumps({"v": 1, "type": "welcome",
                                       "connId": uuid.uuid4().hex, "userId": USER_ID}))
