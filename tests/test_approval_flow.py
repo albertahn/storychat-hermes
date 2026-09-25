@@ -239,9 +239,11 @@ async def test_message_admitted_while_stopped_drops_the_old_turns_approvals(live
     adapter, server, queue = live
     await request(adapter, server, queue, RID_1)
     event = adapter.handle_message.await_args.args[0]
-    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    session_key = adapter._event_session_key(event)
+    adapter._active_sessions[session_key] = object()
     await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
     await wait_until(lambda: adapter.handle_message.await_count == 2)
+    del adapter._active_sessions[session_key]  # Hermes released A's session; B may start
     turn_b, message_b_id = "e" * 32, "65c0000000000000000000d4"
     await server.push("message", **message_frame(turnId=turn_b, messageId=message_b_id))
     await wait_until(lambda: adapter.handle_message.await_count == 3)

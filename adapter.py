@@ -394,15 +394,32 @@ class StoryChatAdapter(BasePlatformAdapter):
                              message_id=frame["messageId"],
                              channel_prompt=frame["channelPrompt"] or None,
                              allow_gateway_control=False)
+        if self._hermes_session_busy(event):
+            # A stopped turn still unwinding, or the gap between on_processing_complete and Hermes
+            # releasing the session: Hermes would treat this message as a busy follow-up (busy ack
+            # sent as this turn's reply, or folded into the old turn with no turn_end of its own).
+            logger.warning("[%s] refused turn %s: Hermes is still finishing the previous turn",
+                           self.name, turn_id)
+            await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
+            return
         if running is not None:
             # Only reachable here when running.stop_requested (the guard above already refused any
-            # other case): the old turn's on_processing_complete never runs, so its approvals would
-            # otherwise stay answerable forever once this new turn supersedes it.
+            # other case) and Hermes already released its session: the old turn's
+            # on_processing_complete never runs, so its approvals would otherwise stay answerable
+            # forever once this new turn supersedes it.
             self._approvals.drop_chat(chat_id)
+            self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != running.turn_id}
         self._turns[chat_id] = _Turn(turn_id, chat_id, frame["messageId"], frame["userName"],
                                      frame["chatName"])
         logger.info("[%s] turn %s started", self.name, turn_id)
         await self.handle_message(event)
+
+    def _hermes_session_busy(self, event: MessageEvent) -> bool:
+        """Whether Hermes still holds this chat's session. Heals a stale guard first, exactly as
+        Hermes' handle_message does on entry (base.py), so refusing here never traps the chat."""
+        session_key = self._event_session_key(event)
+        self._heal_stale_session_lock(session_key)
+        return session_key in self._active_sessions
 
     async def _on_stop(self, frame: Dict[str, Any]) -> None:
         turn = self._turns.get(frame["chatId"])

@@ -232,13 +232,18 @@ async def test_message_admitted_while_a_stopped_turn_unwinds_but_its_late_sends_
     # save A's text as B's reply.
     adapter, server = live
     event = await start_turn(adapter, server)
-    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    session_key = adapter._event_session_key(event)
+    adapter._active_sessions[session_key] = object()
+    a_chunk = await adapter.send(CHAT_ID, "A's first chunk", reply_to=MESSAGE_ID)
+    await server.next_frame()
     await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
     await wait_until(lambda: adapter.handle_message.await_count == 2)
     stop_event = adapter.handle_message.await_args.args[0]
+    del adapter._active_sessions[session_key]  # Hermes released A's session
     turn_b, message_b_id = "e" * 32, "65c0000000000000000000d4"
     await server.push("message", **message_frame(turnId=turn_b, messageId=message_b_id))
     await wait_until(lambda: adapter.handle_message.await_count == 3)
+    assert a_chunk.message_id not in adapter._msg_kinds  # A's bookkeeping went with A
 
     stopped_reply = await adapter.send(CHAT_ID, "Stopped.", reply_to=stop_event.message_id)
     assert stopped_reply.success is False
@@ -251,6 +256,56 @@ async def test_message_admitted_while_a_stopped_turn_unwinds_but_its_late_sends_
                                          "chatId": CHAT_ID, "msgId": b_reply.message_id,
                                          "content": "B's reply", "replyTo": message_b_id,
                                          "kind": "reply"}
+
+
+async def test_message_is_refused_while_hermes_still_runs_the_stopped_turn(live):
+    # Admitted into a session Hermes still holds, B would hit Hermes' busy path: the busy ack
+    # would go out as B's reply, B could be folded into A and never get turn_end, and A's
+    # approval cards would carry B's turnId.
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
+    await wait_until(lambda: adapter.handle_message.await_count == 2)
+    turn_b, message_b_id = "e" * 32, "65c0000000000000000000d4"
+    await server.push("message", **message_frame(turnId=turn_b, messageId=message_b_id))
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": turn_b,
+                                         "chatId": CHAT_ID, "reason": "error"}
+    assert adapter.handle_message.await_count == 2
+    assert adapter._turns[CHAT_ID].turn_id == TURN_ID  # A is still tracked
+
+
+async def test_message_is_refused_between_turn_end_and_hermes_releasing_the_session(live):
+    # on_processing_complete runs before Hermes releases the session guard, so there is a short
+    # gap where A is gone from the adapter but Hermes would still treat B as a busy follow-up.
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert (await server.next_frame())["reason"] == "done"
+    turn_b = "e" * 32
+    await server.push("message", **message_frame(turnId=turn_b, messageId="65c0000000000000000000d4"))
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": turn_b,
+                                         "chatId": CHAT_ID, "reason": "error"}
+    assert adapter.handle_message.await_count == 1
+    assert adapter._turns == {}
+
+
+async def test_a_stale_hermes_session_lock_does_not_block_new_turns(live):
+    # Hermes heals a guard whose owner task already exited when the next message arrives
+    # (base.py _heal_stale_session_lock); refusing first must not skip that heal and trap the chat.
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    await server.next_frame()
+    session_key = adapter._event_session_key(event)
+    finished = asyncio.get_running_loop().create_future()
+    finished.set_result(None)
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._session_tasks[session_key] = finished
+    await server.push("message", **message_frame(turnId="e" * 32, messageId="65c0000000000000000000d4"))
+    await wait_until(lambda: adapter.handle_message.await_count == 2)
+    assert session_key not in adapter._active_sessions
 
 
 async def test_send_reply_to_a_prior_chunk_in_the_same_turn_succeeds(live):
