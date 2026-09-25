@@ -56,6 +56,15 @@ def test_troubleshooting_carries_the_allowlist_log_line():
     assert adapter.NOT_ALLOWED_MSG.format(user_id="<id>") in README
 
 
+def test_the_pin_is_described_as_passing_through_storychat():
+    # The PIN is typed into StoryChat, sent in POST /approvals and relayed in approval_decision:
+    # it is stored only in .env, but it does leave the machine.
+    text = " ".join(README.split())
+    assert "PIN never leave" not in text
+    assert "passes through StoryChat's servers to your agent" in text
+    assert "use a pin you use nowhere else" in text.lower()
+
+
 def load_as_hermes_does(monkeypatch, env_text):
     # Hermes loads ~/.hermes/.env with python-dotenv's parser (hermes_cli/env_loader.py
     # _load_dotenv_with_fallback), which reads `KEY=    # note` as the value "# note".

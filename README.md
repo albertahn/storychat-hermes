@@ -6,7 +6,10 @@ created**, pick **My Hermes Agent** in the model picker and your Hermes replies 
 with its own memory and skills. Replies cost 0 Storypoints.
 
 Your gateway dials **out** to StoryChat over one websocket. Nothing on your computer is exposed to
-the internet, and your LLM keys, tools and approval PIN never leave your machine.
+the internet, and your LLM keys and tools never leave your machine. Your approval PIN is stored only
+in your `.env`: when you approve a command from StoryChat you type the PIN there, and it passes
+through StoryChat's servers to your agent without being stored or logged there. Use a PIN you use
+nowhere else.
 
 ## Requirements
 
@@ -116,8 +119,10 @@ Hermes history. In Hermes v0.21.5 this key is read from `~/.hermes/gateway.json`
   otherwise send those progress messages to StoryChat as the character's reply, so the plugin
   refuses to connect — and refuses turns if these settings change later — until they're off again.
 - **Approvals.** A dangerous command shows an approval card in StoryChat: Approve once, This
-  session, Always or Deny. Every choice except Deny needs `STORYCHAT_APPROVAL_PIN`, which exists only
-  in your `.env`. After 5 wrong PINs in a row, remote approvals stay locked until you restart the
+  session, Always or Deny. Every choice except Deny needs `STORYCHAT_APPROVAL_PIN`. The PIN is stored
+  only in your `.env`; you type it into StoryChat to approve, and it passes through StoryChat's
+  servers to your agent without being stored or logged there, so use a PIN you use nowhere else.
+  After 5 wrong PINs in a row, remote approvals stay locked until you restart the
   gateway. Without a PIN (or with one shorter than 6 digits) remote approvals are refused. If nobody
   answers, Hermes denies the command after `approvals.timeout` (default 300s).
 - **Chat text never controls the gateway.** Messages from StoryChat can't run `/approve`, `/yolo`,
