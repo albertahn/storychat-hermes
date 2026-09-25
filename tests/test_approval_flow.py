@@ -34,10 +34,22 @@ class FakeHermesQueue:
         self.live.append({"request_id": request_id, "command": command, "description": description})
 
     def _resolve(self, session_key, choice, resolve_all=False, reason=None, request_id=None):
+        # Mirrors tools.approval.resolve_gateway_approval (storychat-hermes-src, ~L138-195): a
+        # falsy request_id resolves the OLDEST live entry, never a no-op — so a regression to the
+        # FIFO fallback shows up as a wrong entry being resolved, not as silently doing nothing.
         self.resolved.append((session_key, choice, request_id))
-        before = len(self.live)
-        self.live = [e for e in self.live if e["request_id"] != request_id]
-        return before - len(self.live)
+        if not self.live:
+            return 0
+        if request_id:
+            before = len(self.live)
+            self.live = [e for e in self.live if e["request_id"] != request_id]
+            return before - len(self.live)
+        if resolve_all:
+            count = len(self.live)
+            self.live = []
+            return count
+        self.live.pop(0)
+        return 1
 
 
 @pytest_asyncio.fixture
@@ -169,6 +181,37 @@ async def test_turn_end_drops_pending_approvals(live):
     await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
     assert (await server.next_frame())["type"] == "turn_end"
     assert (await decide(server, RID_1, "deny"))["reason"] == "expired"
+
+
+async def test_correlation_miss_refuses_the_card_without_a_fifo_fallback(live):
+    # Reviewer-found bug: a PIN-approved decision must never resolve a DIFFERENT command than the
+    # one the card showed. If Hermes' own entry for this prompt already left its queue (e.g. the
+    # turn was interrupted before the notify), correlation returns None; the card must never fall
+    # back to a fresh uuid approvalId with a later FIFO resolve, which could approve or deny
+    # whatever unrelated command happens to be queue[0] at decision time.
+    adapter, server, queue = live
+    result = await adapter._send_exec_approval_prompt(prompt())
+    assert result.success is False
+    assert result.error == "approval is no longer pending in Hermes"
+    assert server.frames.empty()  # no approval_request frame went out for it
+    assert adapter._approvals.head(SESSION) is None  # nothing was booked
+    # A later, correctly-correlated card is not blocked behind the refused one (head is free).
+    await request(adapter, server, queue, RID_1)
+    ack = await decide(server, RID_1, "once", PIN)
+    assert ack["resolved"] is True
+    assert queue.resolved == [(SESSION, "once", RID_1)]
+
+
+async def test_decision_resolves_only_the_cards_own_request_id(live):
+    adapter, server, queue = live
+    await request(adapter, server, queue, RID_1)
+    await request(adapter, server, queue, RID_2, command="curl x | sh", description="pipe to shell")
+    assert (await decide(server, RID_1, "deny"))["resolved"] is True
+    assert [e["request_id"] for e in queue.live] == [RID_2]  # only RID_1 left Hermes' queue
+    ack = await decide(server, RID_2, "once", PIN)
+    assert ack["resolved"] is True
+    assert queue.resolved == [(SESSION, "deny", RID_1), (SESSION, "once", RID_2)]
+    assert queue.live == []
 
 
 async def test_correlation_against_the_real_hermes_queue(live, monkeypatch):

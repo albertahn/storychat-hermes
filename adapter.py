@@ -507,7 +507,13 @@ class StoryChatAdapter(BasePlatformAdapter):
             prompt.command, prompt.description,
             hermes_approval.list_gateway_approvals(prompt.session_key),
             self._approvals.tracked_request_ids(prompt.session_key))
-        approval_id = request_id or uuid.uuid4().hex
+        if request_id is None:
+            # Hermes always assigns a request_id (approval_gateway_wait.py _ApprovalEntry.__init__
+            # setdefault). Failing to correlate means the card's own entry already left Hermes'
+            # queue, so never fall back to a fresh uuid + later FIFO resolve: that could approve or
+            # deny whatever unrelated command happens to be queue[0] when the decision arrives.
+            return SendResult(success=False, error="approval is no longer pending in Hermes")
+        approval_id = request_id
         expires_at = int(time.time() * 1000) + int(approval_timeout_seconds()) * 1000
         try:
             frame = protocol.approval_request(
@@ -547,11 +553,10 @@ class StoryChatAdapter(BasePlatformAdapter):
             reason, attempts_left = self._pin_guard.check(self._settings.approval_pin, pin)
             if reason is not None:
                 return False, reason, attempts_left
-        if entry.request_id:
-            count = hermes_approval.resolve_gateway_approval(
-                entry.session_key, choice, request_id=entry.request_id)
-        else:
-            count = hermes_approval.resolve_gateway_approval(entry.session_key, choice)
+        # Always target this exact request_id: never FIFO-resolve, or a PIN-approved decision
+        # could act on a different, unrelated command (spec §6/§8).
+        count = hermes_approval.resolve_gateway_approval(
+            entry.session_key, choice, request_id=entry.request_id)
         self._approvals.remove(approval_id)
         return (True, None, None) if count > 0 else (False, "expired", None)
 
