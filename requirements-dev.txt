@@ -1,0 +1,4 @@
+# Test tools only. Hermes Agent itself is installed separately (see README "Development"),
+# and the plugin's one runtime dependency, websockets 15, ships with Hermes.
+pytest==9.1.1
+pytest-asyncio==1.4.0
