@@ -537,7 +537,9 @@ class StoryChatAdapter(BasePlatformAdapter):
     async def _on_approval_decision(self, frame: Dict[str, Any]) -> None:
         approval_id = frame["approvalId"]
         resolved, reason, attempts_left = self._decide(approval_id, frame["choice"], frame.get("pin"))
-        logger.info("[%s] approval %s resolved=%s reason=%s", self.name, approval_id, resolved, reason)
+        # Spec §12: logs may carry userId/connId/turnId/frame type/size only — never the approvalId,
+        # the command text, or the PIN.
+        logger.info("[%s] approval decision resolved=%s reason=%s", self.name, resolved, reason)
         await self._send_frame(protocol.approval_ack(approval_id, resolved, reason, attempts_left))
 
     def _decide(self, approval_id: str, choice: str,
