@@ -159,3 +159,57 @@ async def test_logs_never_carry_chat_text_or_the_channel_prompt(live, caplog):
     await server.next_frame()
     for secret in (TOKEN, "Hello captain", "Secret reply text", "character data"):
         assert secret not in caplog.text
+
+
+async def test_stop_dispatches_slash_stop_and_its_reply_is_status(live):
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
+    await wait_until(lambda: adapter.handle_message.await_count == 2)
+    stop_event = adapter.handle_message.await_args.args[0]
+    assert (stop_event.text, stop_event.allow_gateway_control) == ("/stop", True)
+    assert stop_event.message_id != MESSAGE_ID
+    await adapter.send(CHAT_ID, "Stopped.", reply_to=stop_event.message_id,
+                       metadata={"notify": True})
+    assert (await server.next_frame())["kind"] == "status"
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert (await server.next_frame())["reason"] == "interrupted"
+
+
+async def test_stop_for_an_idle_session_ends_the_turn_without_slash_stop(live):
+    adapter, server = live
+    await start_turn(adapter, server)
+    await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "interrupted"}
+    assert adapter.handle_message.await_count == 1
+
+
+async def test_stop_for_another_turn_is_ignored(live):
+    adapter, server = live
+    await start_turn(adapter, server)
+    await server.push("stop", turnId="fedcba9876543210fedcba9876543210", chatId=CHAT_ID)
+    probe = "abcdefabcdefabcdefabcdefabcdefab"
+    await server.push("message", **message_frame(turnId=probe, userId="64b0000000000000000000ff"))
+    assert (await server.next_frame())["turnId"] == probe  # the stop produced no frame first
+    assert adapter.handle_message.await_count == 1
+
+
+async def test_dispatch_stop_caps_stop_ids_at_256_entries():
+    # R-T14: _stop_ids is never pruned by Hermes' own lifecycle, so a long-running gateway must
+    # cap it itself, or every /stop ever sent would be kept in memory forever.
+    from storychat_hermes.adapter import _Turn
+    adapter = make_adapter()
+    first_stop_id = last_stop_id = None
+    for i in range(257):
+        turn = _Turn(f"{i:032x}", CHAT_ID, MESSAGE_ID, "Mina", "Captain Rook")
+        before = set(adapter._stop_ids)
+        await adapter._dispatch_stop(turn)  # idle: no _active_sessions entry for this chat
+        (new_id,) = set(adapter._stop_ids) - before
+        if i == 0:
+            first_stop_id = new_id
+        last_stop_id = new_id
+    assert len(adapter._stop_ids) == 256
+    assert first_stop_id not in adapter._stop_ids
+    assert last_stop_id in adapter._stop_ids

@@ -11,7 +11,7 @@ import contextlib
 import logging
 import random
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
@@ -37,6 +37,9 @@ MAX_MESSAGE_LENGTH = 16384
 OPEN_TIMEOUT_S = 10.0
 WELCOME_TIMEOUT_S = 10.0
 LOCK_SCOPE = "storychat-hermes-token"
+# R-T14: _stop_ids is otherwise never pruned; capped so a late "Stopped" reply stays recognisable
+# for the newest MAX_STOP_IDS stops instead of growing forever on a long-running gateway.
+MAX_STOP_IDS = 256
 _OUTCOME_REASONS = {ProcessingOutcome.SUCCESS: "done", ProcessingOutcome.CANCELLED: "interrupted",
                     ProcessingOutcome.FAILURE: "error"}
 # Spec §9.3: logged exactly, with the real id, when STORYCHAT_ALLOWED_USERS does not name the owner.
@@ -51,6 +54,7 @@ class _Turn:
     message_id: str
     user_name: str
     chat_name: str
+    stop_requested: bool = False
 
 
 class _ConnectFailed(Exception):
@@ -82,6 +86,8 @@ class StoryChatAdapter(BasePlatformAdapter):
         self._effective_toolsets: List[str] = []
         self._turns: Dict[str, _Turn] = {}  # chat_id -> running turn
         self._msg_kinds: Dict[str, Tuple[str, str]] = {}  # msgId -> (turnId, kind)
+        self._stop_ids: Dict[str, str] = {}  # synthetic /stop message_id -> turnId
+        self._aux_tasks: set = set()
         self._sleep = asyncio.sleep  # tests replace these two
         self._rng = random.Random()
 
@@ -226,6 +232,7 @@ class StoryChatAdapter(BasePlatformAdapter):
             logger.warning("[%s] %s", self.name, verdict.message)
             if not await self._reconnect(verdict.backoff_start):
                 return
+            self._stop_tracked_turns()
 
     async def _pump(self) -> lifecycle.Verdict:
         ws = self._ws
@@ -289,6 +296,8 @@ class StoryChatAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug("[%s] closing the websocket failed during disconnect", self.name,
                             exc_info=True)
+        for aux in list(self._aux_tasks):
+            aux.cancel()
         self._turns = {}
         self._msg_kinds = {}
 
@@ -301,6 +310,11 @@ class StoryChatAdapter(BasePlatformAdapter):
         except ConnectionClosed:
             return False
         return True
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._aux_tasks.add(task)
+        task.add_done_callback(self._aux_tasks.discard)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "dm", "chat_id": chat_id}
@@ -319,11 +333,14 @@ class StoryChatAdapter(BasePlatformAdapter):
             return
         if frame["type"] == "message":
             await self._on_message(frame)
+        elif frame["type"] == "stop":
+            await self._on_stop(frame)
 
     async def _on_message(self, frame: Dict[str, Any]) -> None:
         turn_id, chat_id = frame["turnId"], frame["chatId"]
         running = self._turns.get(chat_id)
-        if frame["userId"].lower() != self._user_id.lower() or running is not None:
+        if (frame["userId"].lower() != self._user_id.lower()
+                or (running is not None and not running.stop_requested)):
             logger.warning("[%s] refused turn %s (wrong user or a turn is already running)",
                            self.name, turn_id)
             await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
@@ -356,6 +373,36 @@ class StoryChatAdapter(BasePlatformAdapter):
         logger.info("[%s] turn %s started", self.name, turn_id)
         await self.handle_message(event)
 
+    async def _on_stop(self, frame: Dict[str, Any]) -> None:
+        turn = self._turns.get(frame["chatId"])
+        if turn is None or turn.turn_id != frame["turnId"] or turn.stop_requested:
+            return
+        await self._dispatch_stop(turn)
+
+    async def _dispatch_stop(self, turn: _Turn) -> None:
+        """Hermes has no cancel API: send it the /stop command it answers while a turn runs."""
+        stop_id = uuid.uuid4().hex
+        self._turns[turn.chat_id] = replace(turn, stop_requested=True)
+        self._stop_ids[stop_id] = turn.turn_id
+        while len(self._stop_ids) > MAX_STOP_IDS:
+            del self._stop_ids[next(iter(self._stop_ids))]
+        source = self.build_source(chat_id=turn.chat_id, chat_name=turn.chat_name, chat_type="dm",
+                                   user_id=self._user_id, user_name=turn.user_name)
+        event = MessageEvent(text="/stop", message_type=MessageType.TEXT, source=source,
+                             message_id=stop_id, allow_gateway_control=True)
+        if self._event_session_key(event) not in self._active_sessions:
+            # Nothing is running in Hermes for this chat; never /stop an idle session.
+            self._turns.pop(turn.chat_id, None)
+            await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, "interrupted"))
+            return
+        logger.info("[%s] stopping turn %s", self.name, turn.turn_id)
+        self._spawn(self.handle_message(event))
+
+    def _stop_tracked_turns(self) -> None:
+        for turn in list(self._turns.values()):
+            if not turn.stop_requested:
+                self._spawn(self._dispatch_stop(turn))
+
     # ── outbound: send / edit / turn_end ────────────────────────────────────
 
     def _strip_cursor(self, content: str) -> str:
@@ -365,10 +412,12 @@ class StoryChatAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        stop_turn_id = self._stop_ids.get(reply_to) if reply_to else None
         turn = self._turns.get(chat_id)
-        if turn is None:
+        if turn is None or (stop_turn_id is not None and stop_turn_id != turn.turn_id):
             return SendResult(success=False, error="no active StoryChat turn for this chat")
-        kind = "status" if (metadata or {}).get("_interim_send") is True else "reply"
+        is_status = stop_turn_id is not None or (metadata or {}).get("_interim_send") is True
+        kind = "status" if is_status else "reply"
         msg_id = uuid.uuid4().hex
         try:
             frame = protocol.send(turn.turn_id, chat_id, msg_id, self._strip_cursor(content),
@@ -401,7 +450,7 @@ class StoryChatAdapter(BasePlatformAdapter):
             return
         self._turns.pop(turn.chat_id, None)
         self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != turn.turn_id}
-        reason = _OUTCOME_REASONS.get(outcome, "error")
+        reason = "interrupted" if turn.stop_requested else _OUTCOME_REASONS.get(outcome, "error")
         logger.info("[%s] turn %s ended: %s", self.name, turn.turn_id, reason)
         if not await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, reason)):
             logger.warning("[%s] could not send turn_end for turn %s (not connected)",

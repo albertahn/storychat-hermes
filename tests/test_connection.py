@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from support import CHAT_ID, TOKEN, FakeStoryChat, make_adapter, wait_until
+from support import CHAT_ID, TOKEN, FakeStoryChat, make_adapter, message_frame, wait_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -287,3 +287,20 @@ async def test_disconnect_during_reconnect_closes_the_half_open_socket(monkeypat
         await wait_until(lambda: len(server.hellos) == 2)
         await adapter.disconnect()
         await asyncio.wait_for(server.connections[-1].wait_closed(), 3)
+
+
+async def test_reconnect_stops_turns_hermes_is_still_running(monkeypatch, storychat_env):
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        await server.push("message", **message_frame())
+        await wait_until(lambda: adapter.handle_message.await_count == 1)
+        turn_event = adapter.handle_message.await_args.args[0]
+        adapter._active_sessions[adapter._event_session_key(turn_event)] = object()
+        await server.close_client(1012)
+        await wait_until(lambda: adapter.handle_message.await_count == 2)
+        stop_event = adapter.handle_message.await_args.args[0]
+        assert (stop_event.text, stop_event.allow_gateway_control) == ("/stop", True)
+        assert stop_event.source.chat_id == turn_event.source.chat_id
+        await adapter.disconnect()

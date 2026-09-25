@@ -4,10 +4,13 @@ These catch drift in the plugin contract: handle_message → on_processing_compl
 and SendResult handling all come from the installed Hermes.
 """
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 
-from support import CHAT_ID, MESSAGE_ID, TURN_ID, FakeStoryChat, make_adapter, message_frame
+from support import (CHAT_ID, MESSAGE_ID, TURN_ID, FakeStoryChat, make_adapter, message_frame,
+                     wait_until)
 
 pytestmark = pytest.mark.asyncio
 
@@ -50,3 +53,25 @@ async def test_chat_text_can_never_act_as_a_gateway_command(live):
     await server.push("message", **message_frame(text="/yolo"))
     await server.next_frame()
     assert seen == [("/yolo", None)]
+
+
+async def test_stop_interrupts_the_running_turn(live):
+    adapter, server = live
+    started = asyncio.Event()
+
+    async def agent(event):
+        if event.text == "/stop":
+            return "Stopped."
+        started.set()
+        await asyncio.sleep(30)  # a long agent run; only the /stop cancellation ends it
+        return "never sent"
+
+    adapter.set_message_handler(agent)
+    await server.push("message", **message_frame())
+    await asyncio.wait_for(started.wait(), 3)
+    await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
+    status = await server.next_frame()
+    assert (status["type"], status["kind"], status["content"]) == ("send", "status", "Stopped.")
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "interrupted"}
+    await wait_until(lambda: not adapter._active_sessions)
