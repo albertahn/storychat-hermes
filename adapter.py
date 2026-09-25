@@ -315,6 +315,17 @@ class StoryChatAdapter(BasePlatformAdapter):
         task = asyncio.create_task(coro)
         self._aux_tasks.add(task)
         task.add_done_callback(self._aux_tasks.discard)
+        task.add_done_callback(self._log_aux_task_failure)
+
+    def _log_aux_task_failure(self, task: "asyncio.Task") -> None:
+        """Retrieving the exception here also stops asyncio warning it was never retrieved."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        logger.error("[%s] background task failed: %s", self.name, type(exc).__name__)
+        logger.debug("[%s] background task failure", self.name, exc_info=exc)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "dm", "chat_id": chat_id}
@@ -397,6 +408,8 @@ class StoryChatAdapter(BasePlatformAdapter):
         if self._event_session_key(event) not in self._active_sessions:
             # Nothing is running in Hermes for this chat; never /stop an idle session.
             self._turns.pop(turn.chat_id, None)
+            self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != turn.turn_id}
+            logger.info("[%s] turn %s ended: %s", self.name, turn.turn_id, "interrupted")
             await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, "interrupted"))
             return
         logger.info("[%s] stopping turn %s", self.name, turn.turn_id)

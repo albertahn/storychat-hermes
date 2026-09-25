@@ -258,10 +258,10 @@ async def test_stop_tracked_turns_skips_a_turn_that_already_ended(live):
 async def test_dispatch_stop_caps_stop_ids_at_256_entries():
     # R-T14: _stop_ids is never pruned by Hermes' own lifecycle, so a long-running gateway must
     # cap it itself, or every /stop ever sent would be kept in memory forever.
-    from storychat_hermes.adapter import _Turn
+    from storychat_hermes.adapter import MAX_STOP_IDS, _Turn
     adapter = make_adapter()
     first_stop_id = last_stop_id = None
-    for i in range(257):
+    for i in range(MAX_STOP_IDS + 1):
         turn = _Turn(f"{i:032x}", CHAT_ID, MESSAGE_ID, "Mina", "Captain Rook")
         adapter._turns[CHAT_ID] = turn  # _dispatch_stop now requires the turn to still be tracked
         before = set(adapter._stop_ids)
@@ -270,6 +270,6 @@ async def test_dispatch_stop_caps_stop_ids_at_256_entries():
         if i == 0:
             first_stop_id = new_id
         last_stop_id = new_id
-    assert len(adapter._stop_ids) == 256
+    assert len(adapter._stop_ids) == MAX_STOP_IDS
     assert first_stop_id not in adapter._stop_ids
     assert last_stop_id in adapter._stop_ids
