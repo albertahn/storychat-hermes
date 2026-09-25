@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from typing import Tuple
 from urllib.parse import urlsplit
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
@@ -28,6 +29,7 @@ class StoryChatSettings:
     approval_pin: str  # "" when unset or not 6+ digits: remote approvals answer pin_not_configured
     toolsets_raw: str
     is_local_dev: bool  # ws://localhost with STORYCHAT_DEV_INSECURE_LOCALHOST=1
+    allowed_users: Tuple[str, ...]  # STORYCHAT_ALLOWED_USERS entries, trimmed, spelled as written
 
 
 def _secret(name: str) -> str:
@@ -65,5 +67,7 @@ def load_settings() -> StoryChatSettings:
         logger.warning("STORYCHAT_APPROVAL_PIN must be 6 or more digits; remote approvals stay "
                        "disabled until it is fixed")
         pin = ""
+    allowed_users = tuple(u.strip() for u in _secret("STORYCHAT_ALLOWED_USERS").split(",") if u.strip())
     return StoryChatSettings(token=token, url=url, approval_pin=pin,
-                             toolsets_raw=_secret("STORYCHAT_TOOLSETS"), is_local_dev=is_local_dev)
+                             toolsets_raw=_secret("STORYCHAT_TOOLSETS"), is_local_dev=is_local_dev,
+                             allowed_users=allowed_users)

@@ -161,3 +161,30 @@ async def test_clarify_toolset_refuses_to_connect(monkeypatch, storychat_env):
         assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == (
             "storychat_toolsets_clarify", False)
         assert server.requests == []
+
+
+@pytest.mark.parametrize("allowed", ["ffffffffffffffffffffffff", ""])
+async def test_welcome_user_missing_from_the_allowlist_refuses_to_connect(monkeypatch, storychat_env,
+                                                                          caplog, allowed):
+    monkeypatch.setenv("STORYCHAT_ALLOWED_USERS", allowed)
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is False
+        assert len(server.hellos) == 1  # the relay answered with welcome; the refusal is the plugin's
+    message = "STORYCHAT_ALLOWED_USERS must contain your StoryChat userId 64b0000000000000000000a1 — copy it from storychat.app/chat/hermes"
+    assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == ("storychat_user_not_allowed", False)
+    assert adapter.fatal_error_message == message
+    assert f"[{adapter.name}] {message}" in caplog.messages
+    assert adapter.is_connected is False
+
+
+async def test_allowlist_entries_are_trimmed_and_matched_ignoring_case(monkeypatch, storychat_env):
+    monkeypatch.setenv("STORYCHAT_ALLOWED_USERS", " ffffffffffffffffffffffff ,  64B0000000000000000000A1 ")
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        # Hermes' own allowlist check is an exact string match, so it must get the listed spelling.
+        assert adapter._user_id == "64B0000000000000000000A1"
+        await adapter.disconnect()

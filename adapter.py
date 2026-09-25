@@ -163,7 +163,14 @@ class StoryChatAdapter(BasePlatformAdapter):
             raise _ConnectFailed(lifecycle.Verdict(
                 True, lifecycle.BACKOFF_START_S, "storychat_no_welcome",
                 "StoryChat did not answer hello within 10s; retrying")) from None
-        self._ws, self._user_id = ws, frame["userId"]
+        # Spec §9.3: otherwise Hermes would reject the owner, or DM a pairing code that the relay would
+        # save as the character's reply. Hermes matches its allowlist exactly, so keep the listed spelling.
+        user_id = next((u for u in cfg.allowed_users if u.lower() == frame["userId"].lower()), None)
+        if user_id is None:
+            await ws.close()
+            raise _ConnectFailed(lifecycle.Verdict(
+                False, 0.0, "storychat_user_not_allowed", NOT_ALLOWED_MSG.format(user_id=frame["userId"])))
+        self._ws, self._user_id = ws, user_id
         logger.info("[%s] connected (connId=%s userId=%s)", self.name, frame["connId"], frame["userId"])
         self._mark_connected()
 

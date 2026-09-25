@@ -1,7 +1,7 @@
 import pytest
 
 from storychat_hermes import settings
-from support import PIN, TOKEN
+from support import PIN, TOKEN, USER_ID
 
 
 def test_defaults_to_prod_relay_and_chat_only(monkeypatch):
@@ -60,3 +60,9 @@ def test_a_comment_that_dotenv_read_as_the_value_counts_as_empty(monkeypatch):
                        "# fill in yourself, 6+ digits; needed to approve from StoryChat")
     cfg = settings.load_settings()
     assert (cfg.toolsets_raw, cfg.approval_pin) == ("", "")
+
+
+def test_allowed_users_are_split_on_commas_and_trimmed(monkeypatch):
+    monkeypatch.setenv("STORYCHAT_HERMES_TOKEN", TOKEN)
+    monkeypatch.setenv("STORYCHAT_ALLOWED_USERS", f" {USER_ID} ,, 65C0000000000000000000B2 ")
+    assert settings.load_settings().allowed_users == (USER_ID, "65C0000000000000000000B2")
