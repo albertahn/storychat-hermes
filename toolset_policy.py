@@ -41,34 +41,42 @@ def parse_toolsets(raw: str) -> List[str]:
 def _known_toolset_keys() -> frozenset:
     """Configurable + plugin + platform-default toolset keys — the same three sets
     ``hermes_cli.tools_config._get_platform_tools`` excludes when it computes ``explicit_passthrough``.
-    A name outside this union is either an MCP server name or genuinely unknown."""
+    Used ONLY to decide whether a name counts as an explicitly named MCP server: a name outside
+    this union is a real passthrough entry (an MCP server name, or something Hermes leaves
+    unresolved). This is deliberately narrower than "every name Hermes accepts" — see
+    ``validate_toolset`` in :func:`toolset_override` for that broader validity check."""
     from hermes_cli.tools_config import _configurable_keys, _get_plugin_toolset_keys, _platform_default_keys
     return frozenset(_configurable_keys() | _get_plugin_toolset_keys() | _platform_default_keys())
 
 
 def toolset_override(raw: str, config: Optional[dict] = None) -> List[str]:
-    """Chat-only → ``["no_mcp"]``; opt-in → the named toolsets minus clarify, plus ``no_mcp``
-    unless the user named an MCP server. "Named an MCP server" follows Hermes's own passthrough
-    rule: only names that are NOT a configurable, plugin, or platform-default toolset key count as
-    an MCP allowlist entry — otherwise a toolset that happens to share its name with a configured
-    MCP server (e.g. a built-in ``memory`` toolset alongside an MCP server also named ``memory``)
-    would be mistaken for naming that server, skip the sentinel, and leak every enabled MCP server.
+    """Chat-only → ``["no_mcp"]``, decided before any config I/O; opt-in → the named toolsets minus
+    clarify, plus ``no_mcp`` unless the user named an MCP server. "Named an MCP server" follows
+    Hermes's own passthrough rule: only names that are NOT a configurable, plugin, or
+    platform-default toolset key count as an MCP allowlist entry — otherwise a toolset that happens
+    to share its name with a configured MCP server (e.g. a built-in ``memory`` toolset alongside an
+    MCP server also named ``memory``) would be mistaken for naming that server, skip the sentinel,
+    and leak every enabled MCP server.
 
-    Raises :class:`ToolsetPolicyError` for a name that resolves to no known toolset and no enabled
-    MCP server, instead of silently letting it become an unchecked (and leaky) opt-in."""
+    Raises :class:`ToolsetPolicyError` for a name Hermes itself would not accept: valid names are
+    whatever ``toolsets.validate_toolset`` recognizes (composites like ``all``/``*``, postures like
+    ``debugging``/``safe``/``coding``, and every configurable/plugin toolset) plus any configured
+    MCP server name — anything outside that is a typo Hermes could not resolve either, and must
+    not silently become an unchecked (and potentially leaky) opt-in."""
     names = [n for n in parse_toolsets(raw) if n not in ALWAYS_REMOVED]
     if not names:
         return list(CHAT_ONLY_SENTINEL)
     from hermes_cli.tools_config import enabled_mcp_server_names
+    from toolsets import validate_toolset
     cfg = load_gateway_config() if config is None else config
     mcp_servers = enabled_mcp_server_names(cfg)
-    known_keys = _known_toolset_keys()
-    unknown = [n for n in names if n not in CHAT_ONLY_SENTINEL and n not in known_keys and n not in mcp_servers]
+    unknown = [n for n in names
+               if n not in CHAT_ONLY_SENTINEL and not validate_toolset(n) and n not in mcp_servers]
     if unknown:
         raise ToolsetPolicyError(
             "STORYCHAT_TOOLSETS names unknown toolset(s): {}; leave STORYCHAT_TOOLSETS empty for "
             "chat only".format(", ".join(unknown)))
-    named_mcp_servers = (set(names) - known_keys) & mcp_servers
+    named_mcp_servers = (set(names) - _known_toolset_keys()) & mcp_servers
     if "no_mcp" not in names and not named_mcp_servers:
         names.append("no_mcp")
     return names

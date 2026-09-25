@@ -87,3 +87,12 @@ def test_naming_a_genuine_mcp_only_server_resolves_only_that_server():
 def test_rejects_an_unknown_toolset_name_instead_of_silently_ignoring_it():
     with pytest.raises(toolset_policy.ToolsetPolicyError, match="none"):
         toolset_policy.toolset_override("none", config={})
+
+
+@pytest.mark.parametrize("raw", ["all", "*", "debugging", "safe", "coding"])
+def test_accepts_names_hermes_itself_validates(raw):
+    # None of these are in the configurable/plugin/platform-default union (that union is used ONLY
+    # to decide MCP-passthrough) — but toolsets.validate_toolset() accepts them and the real
+    # _get_platform_tools resolves them, so rejecting them here would be stricter than Hermes
+    # itself and would break a legitimate STORYCHAT_TOOLSETS value.
+    assert toolset_policy.toolset_override(raw, config={}) == [raw, "no_mcp"]
