@@ -196,6 +196,47 @@ async def test_stop_for_another_turn_is_ignored(live):
     assert adapter.handle_message.await_count == 1
 
 
+async def test_message_admitted_while_a_stopped_turn_unwinds_but_its_late_sends_are_refused(live):
+    # A reviewer-found bug: once B is admitted, A's OWN late sends (its "Stopped." reply, or a
+    # reply_to its original messageId) must not attach to B's turnId/kind, or the backend would
+    # save A's text as B's reply.
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
+    await wait_until(lambda: adapter.handle_message.await_count == 2)
+    stop_event = adapter.handle_message.await_args.args[0]
+    turn_b, message_b_id = "e" * 32, "65c0000000000000000000d4"
+    await server.push("message", **message_frame(turnId=turn_b, messageId=message_b_id))
+    await wait_until(lambda: adapter.handle_message.await_count == 3)
+
+    stopped_reply = await adapter.send(CHAT_ID, "Stopped.", reply_to=stop_event.message_id)
+    assert stopped_reply.success is False
+    a_late_reply = await adapter.send(CHAT_ID, "A's final reply", reply_to=MESSAGE_ID)
+    assert a_late_reply.success is False
+
+    b_reply = await adapter.send(CHAT_ID, "B's reply", reply_to=message_b_id)
+    assert b_reply.success is True
+    assert await server.next_frame() == {"v": 1, "type": "send", "turnId": turn_b,
+                                         "chatId": CHAT_ID, "msgId": b_reply.message_id,
+                                         "content": "B's reply", "replyTo": message_b_id,
+                                         "kind": "reply"}
+
+
+async def test_send_reply_to_a_prior_chunk_in_the_same_turn_succeeds(live):
+    adapter, server = live
+    await start_turn(adapter, server)
+    first = await adapter.send(CHAT_ID, "Chunk one")
+    assert first.success is True
+    await server.next_frame()
+    second = await adapter.send(CHAT_ID, "Chunk two", reply_to=first.message_id)
+    assert second.success is True
+    assert await server.next_frame() == {"v": 1, "type": "send", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "msgId": second.message_id,
+                                         "content": "Chunk two", "replyTo": first.message_id,
+                                         "kind": "reply"}
+
+
 async def test_dispatch_stop_caps_stop_ids_at_256_entries():
     # R-T14: _stop_ids is never pruned by Hermes' own lifecycle, so a long-running gateway must
     # cap it itself, or every /stop ever sent would be kept in memory forever.

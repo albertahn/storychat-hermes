@@ -412,9 +412,15 @@ class StoryChatAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        stop_turn_id = self._stop_ids.get(reply_to) if reply_to else None
         turn = self._turns.get(chat_id)
-        if turn is None or (stop_turn_id is not None and stop_turn_id != turn.turn_id):
+        if turn is None:
+            return SendResult(success=False, error="no active StoryChat turn for this chat")
+        stop_turn_id = self._stop_ids.get(reply_to) if reply_to else None
+        known_turn_id = self._msg_kinds.get(reply_to, (None, None))[0] if reply_to else None
+        # A late send from a turn that already ended (its stop reply, its own reply_to, or a
+        # stream-split chunk) must never attach to a DIFFERENT, newer turn of the same chat.
+        if (reply_to is not None and reply_to != turn.message_id
+                and stop_turn_id != turn.turn_id and known_turn_id != turn.turn_id):
             return SendResult(success=False, error="no active StoryChat turn for this chat")
         is_status = stop_turn_id is not None or (metadata or {}).get("_interim_send") is True
         kind = "status" if is_status else "reply"
