@@ -1,0 +1,37 @@
+name: storychat-hermes
+label: StoryChat
+kind: platform
+version: 0.1.0
+description: >
+  StoryChat platform adapter for Hermes Agent. Your gateway dials out to
+  StoryChat over one websocket so you can chat with characters you created
+  on storychat.app while Hermes answers as that character. Chat only by
+  default: no host-access tools reach StoryChat unless you opt in with
+  STORYCHAT_TOOLSETS, and every dangerous command needs your approval PIN.
+author: StoryChat
+requires_env:
+  - name: STORYCHAT_HERMES_TOKEN
+    description: "Pairing token from storychat.app/chat/hermes (starts with sch_)"
+    prompt: "StoryChat pairing token"
+    password: true
+optional_env:
+  - name: STORYCHAT_ALLOWED_USERS
+    description: "Your StoryChat userId (pre-filled on storychat.app/chat/hermes)"
+    prompt: "StoryChat userId"
+    password: false
+  - name: STORYCHAT_APPROVAL_PIN
+    description: "6+ digit PIN you type in StoryChat to approve a dangerous command"
+    prompt: "Approval PIN (6+ digits)"
+    password: true
+  - name: STORYCHAT_TOOLSETS
+    description: "Empty = chat only (default). Comma-separated toolsets to opt in, e.g. web,file,terminal"
+    prompt: "Toolsets for StoryChat (empty = chat only)"
+    password: false
+  - name: STORYCHAT_URL
+    description: "Relay URL (default wss://prod-rail.storychat.app/api/v1/hermes/connect)"
+    prompt: "StoryChat relay URL (or empty)"
+    password: false
+  - name: STORYCHAT_DEV_INSECURE_LOCALHOST
+    description: "Set to 1 to allow ws://localhost for local development only"
+    prompt: "Allow ws://localhost? (1 or empty)"
+    password: false

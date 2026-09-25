@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 from . import lifecycle, protocol, toolset_policy
@@ -292,3 +293,29 @@ class StoryChatAdapter(BasePlatformAdapter):
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Text can only go to a running StoryChat turn."""
         return SendResult(success=False, error="no active StoryChat turn for this chat")
+
+
+# ── plugin registration (spec §9.1) ─────────────────────────────────────────
+
+
+def check_requirements() -> bool:
+    """Passive probe: the websockets asyncio client ships with Hermes."""
+    try:
+        import websockets.asyncio.client  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def is_connected(config: Any) -> bool:
+    """Gates enablement: without a token the platform would retry-connect forever."""
+    return bool(str(_get_scoped_secret("STORYCHAT_HERMES_TOKEN", "") or "").strip())
+
+
+def register(ctx: Any) -> None:
+    ctx.register_platform(
+        name="storychat", label="StoryChat", adapter_factory=StoryChatAdapter,
+        check_fn=check_requirements, is_connected=is_connected,
+        required_env=["STORYCHAT_HERMES_TOKEN"], allowed_users_env="STORYCHAT_ALLOWED_USERS",
+        install_hint="websockets ships with Hermes Agent; reinstall Hermes if it is missing",
+        max_message_length=MAX_MESSAGE_LENGTH, emoji="📖")
