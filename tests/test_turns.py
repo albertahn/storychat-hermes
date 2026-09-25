@@ -75,7 +75,7 @@ async def test_hermes_gets_the_user_id_as_spelled_in_the_allowlist(monkeypatch, 
         await adapter.disconnect()
 
 
-async def test_turn_is_refused_when_the_toolsets_changed_since_startup(monkeypatch, live):
+async def test_turn_is_refused_when_the_toolsets_changed_since_startup(monkeypatch, live, caplog):
     # config.yaml is re-read every turn (gateway/run_turn.py _load_gateway_config), so a config
     # edit after startup must not bypass the chat-only self-check (R-T12).
     adapter, server = live
@@ -87,9 +87,10 @@ async def test_turn_is_refused_when_the_toolsets_changed_since_startup(monkeypat
                                          "chatId": CHAT_ID, "reason": "error"}
     assert adapter.handle_message.await_count == 0
     assert adapter._turns == {}
+    assert f"refused turn {TURN_ID}: the StoryChat toolsets changed since startup" in caplog.text
 
 
-async def test_turn_is_refused_when_display_would_leak_progress_as_a_reply(monkeypatch, live):
+async def test_turn_is_refused_when_display_would_leak_progress_as_a_reply(monkeypatch, live, caplog):
     # Spec §9.2: a config edit after startup that turns tool_progress back on must not bypass the
     # connect-time display self-check either (same R-T12 concern as the toolsets recheck above).
     adapter, server = live
@@ -100,6 +101,26 @@ async def test_turn_is_refused_when_display_would_leak_progress_as_a_reply(monke
                                          "chatId": CHAT_ID, "reason": "error"}
     assert adapter.handle_message.await_count == 0
     assert adapter._turns == {}
+    assert f"refused turn {TURN_ID}: the StoryChat display settings changed since startup" in caplog.text
+
+
+async def test_turn_is_refused_when_the_recheck_cannot_run(monkeypatch, live, caplog):
+    adapter, server = live
+    from storychat_hermes import toolset_policy
+
+    def broken():
+        raise RuntimeError("unexpected detail")
+
+    monkeypatch.setattr(toolset_policy, "load_gateway_config", broken)
+    await server.push("message", **message_frame())
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "error"}
+    assert adapter.handle_message.await_count == 0
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any(TURN_ID in m and "RuntimeError" in m for m in errors)
+    assert any(f"refused turn {TURN_ID}: could not verify the StoryChat toolsets/display settings" in m
+               for m in errors)
+    assert "unexpected detail" not in caplog.text
 
 
 async def test_reply_send_and_edit_strip_the_stream_cursor(live):
@@ -214,6 +235,34 @@ async def test_stop_for_an_idle_session_ends_the_turn_without_slash_stop(live):
     assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
                                          "chatId": CHAT_ID, "reason": "interrupted"}
     assert adapter.handle_message.await_count == 1
+
+
+async def test_a_second_stop_for_a_stopping_turn_is_ignored(live):
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
+    await wait_until(lambda: adapter.handle_message.await_count == 2)
+    await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
+    probe = "abcdefabcdefabcdefabcdefabcdefab"
+    await server.push("message", **message_frame(turnId=probe, userId="64b0000000000000000000ff"))
+    assert (await server.next_frame())["turnId"] == probe  # the second stop produced no frame
+    assert adapter.handle_message.await_count == 2  # and no second /stop
+
+
+async def test_stop_rechecks_that_hermes_is_busy_right_before_dispatching(live):
+    # The /stop runs from a spawned task; if Hermes released the session in between, a /stop sent
+    # anyway would reach an idle session (where it kills background processes).
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    session_key = adapter._event_session_key(event)
+    adapter._active_sessions[session_key] = object()
+    await adapter._on_stop({"turnId": TURN_ID, "chatId": CHAT_ID})
+    del adapter._active_sessions[session_key]  # released before the spawned /stop runs
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "interrupted"}
+    assert adapter.handle_message.await_count == 1
+    assert adapter._turns == {}
 
 
 async def test_stop_for_another_turn_is_ignored(live):

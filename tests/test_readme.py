@@ -3,10 +3,13 @@
 import ast
 import inspect
 import io
+import logging
 import textwrap
 from pathlib import Path
 
-from support import TOKEN, USER_ID
+import pytest
+
+from support import TOKEN, USER_ID, make_adapter
 
 README = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
 
@@ -144,4 +147,47 @@ def test_troubleshooting_carries_the_refusals_added_after_the_plan():
     # literal logger.error format string and take the fixed part after "refused turn %s".
     per_turn_fmt = _logger_error_format(adapter.StoryChatAdapter._on_message, "refused turn")
     _, _, per_turn_suffix = per_turn_fmt.partition("refused turn %s")
-    assert per_turn_suffix and per_turn_suffix in README
+    assert per_turn_suffix
+    for reason in (adapter.TOOLSETS_CHANGED, adapter.DISPLAY_CHANGED, adapter.RECHECK_UNVERIFIED):
+        assert f"refused turn …{per_turn_suffix % reason}" in README
+
+
+def test_the_reconnect_delay_matches_the_backoff():
+    from storychat_hermes import lifecycle
+
+    class Edge:
+        def __init__(self, pick):
+            self.pick = pick
+
+        def uniform(self, low, high):
+            return self.pick(low, high)
+
+    fastest = lifecycle.backoff_delay(0, lifecycle.BACKOFF_START_S, Edge(min))
+    slowest = lifecycle.backoff_delay(99, lifecycle.BACKOFF_START_S, Edge(max))
+    text = " ".join(README.split())
+    assert f"{fastest:g}–{slowest:g} seconds" in text
+    assert f"after {lifecycle.MAX_RECONNECT_ATTEMPTS} failed attempts Hermes' own watcher takes over" in text
+
+
+def test_the_no_mcp_warning_is_quoted_in_full(monkeypatch, caplog):
+    import hermes_cli.tools_config as tools_config
+    monkeypatch.setattr(tools_config, "_warned_invalid_platform_toolsets", set())
+    caplog.set_level(logging.WARNING, logger=tools_config.logger.name)
+    tools_config._warn_all_invalid_platform_toolsets("storychat", ["no_mcp"])
+    (line,) = [r.getMessage() for r in caplog.records if "no_mcp" in r.getMessage()]
+    assert line in README
+    assert "the empty set is intended" in README
+
+
+@pytest.mark.asyncio
+async def test_troubleshooting_covers_the_token_lock_and_rate_limiting(monkeypatch, storychat_env):
+    import gateway.status
+
+    from storychat_hermes import lifecycle
+    monkeypatch.setattr(gateway.status, "acquire_scoped_lock",
+                        lambda scope, identity, metadata=None: (False, {"pid": 4242}))
+    adapter = make_adapter()
+    assert await adapter.connect() is False
+    held, in_use, _ = adapter.fatal_error_message.partition(" already in use")
+    assert in_use and f"{held}{in_use}" in README
+    assert lifecycle._RATE_LIMITED.message in README

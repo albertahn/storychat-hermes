@@ -97,7 +97,10 @@ Hermes history. In Hermes v0.21.5 this key is read from `~/.hermes/gateway.json`
 - **Chat only by default.** With `STORYCHAT_TOOLSETS` empty the plugin gives Hermes the override
   `["no_mcp"]`: no core toolset and no MCP server reaches StoryChat. Hermes then logs this line once,
   which is expected:
-  `platform 'storychat' has no valid toolsets configured (unknown name(s): no_mcp) - tools will be unavailable.`
+
+  `` platform 'storychat' has no valid toolsets configured (unknown name(s): no_mcp) - tools will be unavailable. Run `hermes tools` to reconfigure. See issue #38798. ``
+
+  Do not run `hermes tools` to "fix" it for storychat — the empty set is intended.
 - **Startup self-check.** Before connecting, the plugin resolves the toolsets exactly as Hermes will.
   In chat-only mode only `x_search` (when xAI credentials exist) and `context_engine` (when a
   non-default context engine is set) are tolerated; neither can touch your files or run commands.
@@ -107,7 +110,9 @@ Hermes history. In Hermes v0.21.5 this key is read from `~/.hermes/gateway.json`
   then restart the gateway. The same check also runs before every turn, because Hermes re-reads
   `config.yaml` on each turn: if the toolsets or display settings changed since startup, the turn
   is refused (and StoryChat shows an error) until you fix `config.yaml` and restart the gateway.
-- **Opting in.** `STORYCHAT_TOOLSETS=web,file,terminal` gives StoryChat exactly those toolsets.
+- **Opting in.** `STORYCHAT_TOOLSETS=web,file,terminal` gives StoryChat those toolsets, plus any
+  plugin toolsets that are on by default. The startup self-check sends the full list to StoryChat,
+  and the `/chat/hermes` page shows it.
   `clarify` is always removed (StoryChat cannot answer its typed question) — and if it comes back
   through a bundle such as `hermes-cli`, `coding` or `all`, the plugin refuses to connect, so name
   toolsets one by one instead of a bundle, or add `clarify` to `agent.disabled_toolsets`. An unknown
@@ -141,10 +146,15 @@ Hermes history. In Hermes v0.21.5 this key is read from `~/.hermes/gateway.json`
 | `STORYCHAT_TOOLSETS names unknown toolset(s): …; leave STORYCHAT_TOOLSETS empty for chat only` | `STORYCHAT_TOOLSETS` named something Hermes doesn't recognize as a toolset key or an enabled MCP server. | Fix the toolset names in `.env` (or leave `STORYCHAT_TOOLSETS` empty for chat only), then restart the gateway. |
 | `STORYCHAT_TOOLSETS brings in the clarify toolset (through a bundle such as hermes-cli, coding or all), and StoryChat cannot answer clarify questions, so turns would hang.` | A bundle in `STORYCHAT_TOOLSETS` brought `clarify` back in. | Name toolsets one by one (for example `web,file,terminal`) instead of a bundle, or add `clarify` to `agent.disabled_toolsets` in `config.yaml`, then restart the gateway. |
 | `these StoryChat display settings are still on: …` | `tool_progress`, `interim_assistant_messages` or `thinking_progress` under `display.platforms.storychat` would leak progress text into StoryChat as the character's reply. | Set them off under `display.platforms.storychat` in `config.yaml` (see "Progress messages stay off" above), then restart the gateway. |
-| `refused turn …: the StoryChat toolsets changed since startup; fix config.yaml and restart the gateway` | `config.yaml` changed after the gateway started, so the per-turn self-check refused this turn. | Fix `config.yaml` back to a safe configuration and run `hermes gateway restart`. |
+| `refused turn …: the StoryChat toolsets changed since startup; fix config.yaml and restart the gateway` | `config.yaml` changed after the gateway started and now gives StoryChat toolsets it must not get, so the per-turn self-check refused this turn. | Fix `config.yaml` back to a safe configuration and run `hermes gateway restart`. |
+| `refused turn …: the StoryChat display settings changed since startup; fix config.yaml and restart the gateway` | `config.yaml` changed after the gateway started and turned a `display.platforms.storychat` progress setting back on. | Set it off again (see "Progress messages stay off" above) and run `hermes gateway restart`. |
+| `refused turn …: could not verify the StoryChat toolsets/display settings; fix config.yaml and restart the gateway` | The per-turn self-check could not read the settings; the error line just before it names the exception (often a YAML mistake in `config.yaml`). | Fix `config.yaml` and run `hermes gateway restart`. |
+| `StoryChat pairing token already in use …` | Another Hermes gateway on this computer (another profile, or the same one started twice) is already connected with this token. | Stop the other gateway (the message names it), then run `hermes gateway restart`. |
+| `StoryChat is rate limiting this connection; retrying in 60s or more` | StoryChat closed the connection with code 4429, or refused it with HTTP 429, because of too many connection attempts or messages. | Nothing: the plugin backs off from 60 seconds and reconnects on its own. If it keeps happening, make sure only one gateway uses this token. |
 
-A network blip or a StoryChat redeploy is handled for you: the plugin reconnects after 1–60
-seconds. A reply that was running when the connection dropped is stopped.
+A network blip or a StoryChat redeploy is handled for you: the plugin reconnects after 1–75
+seconds, and after 10 failed attempts Hermes' own watcher takes over. A reply that was running when
+the connection dropped is stopped.
 
 ## Privacy
 

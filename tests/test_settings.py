@@ -66,3 +66,11 @@ def test_allowed_users_are_split_on_commas_and_trimmed(monkeypatch):
     monkeypatch.setenv("STORYCHAT_HERMES_TOKEN", TOKEN)
     monkeypatch.setenv("STORYCHAT_ALLOWED_USERS", f" {USER_ID} ,, 65C0000000000000000000B2 ")
     assert settings.load_settings().allowed_users == (USER_ID, "65C0000000000000000000B2")
+
+
+def test_a_printed_settings_object_never_shows_the_token_or_the_pin(monkeypatch):
+    monkeypatch.setenv("STORYCHAT_HERMES_TOKEN", TOKEN)
+    monkeypatch.setenv("STORYCHAT_APPROVAL_PIN", PIN)
+    text = repr(settings.load_settings())
+    assert TOKEN not in text
+    assert PIN not in text

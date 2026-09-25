@@ -186,6 +186,11 @@ async def test_welcome_user_missing_from_the_allowlist_refuses_to_connect(monkey
         adapter = make_adapter()
         assert await adapter.connect() is False
         assert len(server.hellos) == 1  # the relay answered with welcome; the refusal is the plugin's
+        # Cross-plan contract 9: a normal close right after welcome, before any other frame.
+        await asyncio.wait_for(server.connections[-1].wait_closed(), 3)
+        assert server.connections[-1].close_code == 1000
+        assert server.frames.empty()
+        assert list(Path(os.environ["HERMES_GATEWAY_LOCK_DIR"]).glob("storychat-hermes-token-*.lock")) == []
     message = "STORYCHAT_ALLOWED_USERS must contain your StoryChat userId 64b0000000000000000000a1 — copy it from storychat.app/chat/hermes"
     assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == ("storychat_user_not_allowed", False)
     assert adapter.fatal_error_message == message
@@ -304,3 +309,122 @@ async def test_reconnect_stops_turns_hermes_is_still_running(monkeypatch, storyc
         assert (stop_event.text, stop_event.allow_gateway_control) == ("/stop", True)
         assert stop_event.source.chat_id == turn_event.source.chat_id
         await adapter.disconnect()
+
+
+PROXY_ENV = ("https_proxy", "HTTPS_PROXY", "wss_proxy", "WSS_PROXY", "socks_proxy", "SOCKS_PROXY",
+             "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY")
+REMOTE_URL = "wss://relay.storychat.invalid/api/v1/hermes/connect"
+
+
+def storychat_locks():
+    return list(Path(os.environ["HERMES_GATEWAY_LOCK_DIR"]).glob("storychat-hermes-token-*.lock"))
+
+
+@pytest.mark.parametrize("proxy", ["ftp://127.0.0.1:9", "socks5://127.0.0.1:9"])
+async def test_unusable_proxy_settings_are_fatal_and_release_the_lock(monkeypatch, storychat_env, proxy):
+    # websockets raises InvalidProxy for an unsupported proxy URL and ImportError for a SOCKS proxy
+    # without python-socks; neither may escape connect() still holding the token lock.
+    import websockets.asyncio.client as ws_client
+
+    async def no_python_socks(*args, **kwargs):
+        raise ImportError("python-socks is required to use a SOCKS proxy")
+
+    # Patched so the SOCKS case behaves the same where python-socks happens to be installed.
+    monkeypatch.setattr(ws_client, "connect_socks_proxy", no_python_socks)
+    for name in PROXY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("https_proxy", proxy)
+    monkeypatch.setenv("STORYCHAT_URL", REMOTE_URL)
+    adapter = make_adapter()
+    assert await adapter.connect() is False
+    assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == ("storychat_proxy_invalid", False)
+    assert adapter.fatal_error_message == (
+        "proxy settings are invalid or need python-socks — check HTTPS_PROXY/ALL_PROXY")
+    assert storychat_locks() == []
+
+
+async def test_an_unexpected_connect_error_is_retryable_and_releases_the_lock(monkeypatch, storychat_env):
+    from storychat_hermes import lifecycle
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("unexpected detail")
+
+    monkeypatch.setattr(lifecycle, "NoRedirectConnect", broken)
+    monkeypatch.setenv("STORYCHAT_URL", REMOTE_URL)
+    adapter = make_adapter()
+    assert await adapter.connect() is False
+    assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == ("storychat_unreachable", True)
+    assert "RuntimeError" in adapter.fatal_error_message
+    assert "unexpected detail" not in adapter.fatal_error_message
+    assert storychat_locks() == []
+
+
+async def test_a_crashed_connection_task_is_handed_to_hermes(monkeypatch, storychat_env, caplog):
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        fatal = fatal_recorder(adapter)
+
+        async def crash():
+            raise RuntimeError("unexpected detail")
+
+        adapter._pump = crash
+        assert await adapter.connect() is True
+        await wait_until(lambda: fatal)
+        assert fatal == [("storychat_connection_failed", True)]
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any("RuntimeError" in m for m in errors)
+        assert "unexpected detail" not in caplog.text
+        await adapter.disconnect()
+
+
+async def test_a_toolset_check_that_cannot_run_keeps_its_detail_at_debug(monkeypatch, storychat_env,
+                                                                        caplog):
+    caplog.set_level(logging.DEBUG)
+    from storychat_hermes import toolset_policy
+
+    def broken(override, config=None):
+        raise RuntimeError("unexpected detail")
+
+    monkeypatch.setattr(toolset_policy, "effective_toolsets", broken)
+    adapter = make_adapter()
+    assert await adapter.connect() is False
+    assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == (
+        "storychat_toolsets_unverified", False)
+    assert any(r.levelno == logging.DEBUG and r.exc_info for r in caplog.records
+               if r.name == "storychat_hermes.adapter")
+
+
+async def test_a_display_check_that_cannot_run_refuses_to_connect(monkeypatch, storychat_env):
+    from storychat_hermes import toolset_policy
+
+    def broken(config=None):
+        raise RuntimeError("unexpected detail")
+
+    monkeypatch.setattr(toolset_policy, "unsafe_display_settings", broken)
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is False
+        assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == (
+            "storychat_display_unverified", False)
+        assert server.requests == []
+
+
+async def test_a_bad_welcome_is_a_protocol_mismatch_with_the_detail_at_debug(monkeypatch, storychat_env,
+                                                                            caplog):
+    caplog.set_level(logging.DEBUG)
+    from storychat_hermes import protocol
+
+    def bad_welcome(raw):
+        raise protocol.ProtocolError("welcome.userId must be a 24-hex ObjectId")
+
+    monkeypatch.setattr(protocol, "parse_server_frame", bad_welcome)
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is False
+    assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == (
+        "storychat_protocol_mismatch", False)
+    assert any(r.levelno == logging.DEBUG and r.exc_info for r in caplog.records
+               if r.name == "storychat_hermes.adapter")

@@ -284,3 +284,36 @@ async def test_logs_never_carry_the_pin(live, caplog):
     await decide(server, RID_1, "once", "999999")
     await decide(server, RID_1, "once", PIN)
     assert PIN not in caplog.text and "999999" not in caplog.text
+
+
+async def test_only_protocol_choices_are_offered_once_each(live):
+    adapter, server, queue = live
+    odd = [("Allow Once", "once", "primary"), ("Once again", "once", ""), ("Maybe", "maybe", ""),
+           ("Deny", "deny", "danger")]
+    result, frame = await request(adapter, server, queue, RID_1, actions=odd)
+    assert result.success is True
+    assert frame["choices"] == ["once", "deny"]
+    assert adapter._approvals.find(RID_1).choices == ("once", "deny")
+
+
+@pytest.mark.parametrize("request_id,actions", [(RID_1, [("Maybe", "maybe", "")]),
+                                                ("not-a-request-id", ALL)])
+async def test_a_card_the_relay_would_reject_is_never_sent(live, request_id, actions):
+    # The relay closes with 4400 on a schema miss, which the plugin treats as fatal.
+    adapter, server, queue = live
+    queue.add(request_id, "rm -rf build", "recursive delete")
+    result = await adapter._send_exec_approval_prompt(prompt(actions=actions))
+    assert result.success is False
+    assert server.frames.empty()
+    assert adapter._approvals.head(SESSION) is None
+
+
+async def test_an_approval_without_a_request_id_is_never_resolved(live):
+    # Resolving with a falsy request_id would make Hermes resolve its OLDEST entry instead.
+    from storychat_hermes.approvals import PendingApproval
+    adapter, server, queue = live
+    queue.add(RID_1, "rm -rf build", "recursive delete")
+    approval_id = "a" * 32
+    adapter._approvals.add(PendingApproval(approval_id, SESSION, CHAT_ID, TURN_ID, "", ("once", "deny")))
+    assert (await decide(server, approval_id, "deny"))["reason"] == "expired"
+    assert queue.resolved == []

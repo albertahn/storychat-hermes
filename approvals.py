@@ -47,7 +47,7 @@ class PendingApproval:
     session_key: str
     chat_id: str
     turn_id: str
-    request_id: Optional[str]  # Hermes' own id; None when it could not be correlated
+    request_id: str  # Hermes' own id; a card is only booked once it is correlated
     choices: Tuple[str, ...]
 
 
@@ -88,9 +88,8 @@ class ApprovalBook:
         return entry
 
     def reconcile(self, session_key: str, live_request_ids: Set[str]) -> None:
-        """Drop entries Hermes no longer holds. Uncorrelated entries go when Hermes holds none."""
-        self._keep(session_key, lambda e: (e.request_id in live_request_ids) if e.request_id
-                   else bool(live_request_ids))
+        """Drop entries Hermes no longer holds."""
+        self._keep(session_key, lambda e: e.request_id in live_request_ids)
 
     def drop_chat(self, chat_id: str) -> None:
         for session_key in list(self._by_session):

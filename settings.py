@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple
 from urllib.parse import urlsplit
 
@@ -24,9 +24,11 @@ class SettingsError(ValueError):
 
 @dataclass(frozen=True)
 class StoryChatSettings:
-    token: str
+    # repr=False: a logged or printed settings object must never show the token or the PIN (§12).
+    token: str = field(repr=False)
     url: str
-    approval_pin: str  # "" when unset or not 6+ digits: remote approvals answer pin_not_configured
+    # "" when unset or not 6+ digits: remote approvals answer pin_not_configured
+    approval_pin: str = field(repr=False)
     toolsets_raw: str
     is_local_dev: bool  # ws://localhost with STORYCHAT_DEV_INSECURE_LOCALHOST=1
     allowed_users: Tuple[str, ...]  # STORYCHAT_ALLOWED_USERS entries, trimmed, spelled as written

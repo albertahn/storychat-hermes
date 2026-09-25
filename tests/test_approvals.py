@@ -4,7 +4,7 @@ from support import CHAT_ID, PIN, TURN_ID
 SESSION = "agent:main:storychat:dm:" + CHAT_ID
 
 
-def entry(approval_id, request_id=None, chat_id=CHAT_ID):
+def entry(approval_id, request_id, chat_id=CHAT_ID):
     return PendingApproval(approval_id, SESSION, chat_id, TURN_ID, request_id, ("once", "deny"))
 
 
@@ -41,9 +41,8 @@ def test_reconcile_drops_what_hermes_no_longer_holds():
     book = ApprovalBook()
     book.add(entry("a" * 32, "r1"))
     book.add(entry("b" * 32, "r2"))
-    book.add(entry("c" * 32, None))
     book.reconcile(SESSION, {"r2"})
-    assert [book.find(i) is not None for i in ("a" * 32, "b" * 32, "c" * 32)] == [False, True, True]
+    assert [book.find(i) is not None for i in ("a" * 32, "b" * 32)] == [False, True]
     book.reconcile(SESSION, set())
     assert book.head(SESSION) is None
 

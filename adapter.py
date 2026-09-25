@@ -7,7 +7,6 @@ Hermes ``MessageEvent``s and streams Hermes' sends/edits back as ``send``/``edit
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import random
 import time
@@ -15,7 +14,7 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
-from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidProxy, InvalidStatus
 
 from gateway.config import DEFAULT_STREAMING_CURSOR, Platform, PlatformConfig
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
@@ -47,6 +46,11 @@ _OUTCOME_REASONS = {ProcessingOutcome.SUCCESS: "done", ProcessingOutcome.CANCELL
                     ProcessingOutcome.FAILURE: "error"}
 # Spec §9.3: logged exactly, with the real id, when STORYCHAT_ALLOWED_USERS does not name the owner.
 NOT_ALLOWED_MSG = "STORYCHAT_ALLOWED_USERS must contain your StoryChat userId {user_id} — copy it from storychat.app/chat/hermes"
+PROXY_MSG = "proxy settings are invalid or need python-socks — check HTTPS_PROXY/ALL_PROXY"
+# Why the per-turn recheck (R-T12) refused a turn; the README troubleshooting table quotes these.
+TOOLSETS_CHANGED = "the StoryChat toolsets changed since startup"
+DISPLAY_CHANGED = "the StoryChat display settings changed since startup"
+RECHECK_UNVERIFIED = "could not verify the StoryChat toolsets/display settings"
 _opt_in_warned = False
 
 
@@ -126,8 +130,24 @@ class StoryChatAdapter(BasePlatformAdapter):
             self._release_platform_lock()
             return self._fail(exc.verdict.code, exc.verdict.message, retryable=exc.verdict.retry)
         self._run_task = asyncio.create_task(self._run())
+        self._run_task.add_done_callback(self._on_run_task_done)
         self._wire_plugin_handlers(None)
         return True
+
+    def _on_run_task_done(self, task: "asyncio.Task") -> None:
+        """A connection task that dies with an exception would otherwise leave the platform
+        silently dead: hand it to Hermes' reconnect watcher like any other retryable failure."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None or self._closing:
+            return
+        logger.error("[%s] the StoryChat connection task failed: %s", self.name, type(exc).__name__)
+        logger.debug("[%s] connection task failure", self.name, exc_info=exc)
+        self._set_fatal_error("storychat_connection_failed",
+                              f"the StoryChat connection failed ({type(exc).__name__}); retrying",
+                              retryable=True)
+        self._spawn(self._notify_fatal_error())
 
     def _check_toolsets(self, cfg: settings_mod.StoryChatSettings) -> bool:
         """Startup self-check (spec §9.3): refuse to connect when chat-only mode would leak tools."""
@@ -138,6 +158,7 @@ class StoryChatAdapter(BasePlatformAdapter):
         except toolset_policy.ToolsetPolicyError as exc:
             return self._fail("storychat_toolsets_invalid", str(exc), retryable=False)
         except Exception as exc:
+            logger.debug("[%s] toolset self-check failure", self.name, exc_info=True)
             return self._fail("storychat_toolsets_unverified",
                               f"could not verify the StoryChat toolsets ({type(exc).__name__}); "
                               "refusing to connect", retryable=False)
@@ -166,7 +187,8 @@ class StoryChatAdapter(BasePlatformAdapter):
         try:
             unsafe = toolset_policy.unsafe_display_settings()
         except Exception as exc:
-            return self._fail("storychat_toolsets_unverified",
+            logger.debug("[%s] display self-check failure", self.name, exc_info=True)
+            return self._fail("storychat_display_unverified",
                               f"could not verify the StoryChat display settings ({type(exc).__name__}); "
                               "refusing to connect", retryable=False)
         if unsafe:
@@ -181,7 +203,24 @@ class StoryChatAdapter(BasePlatformAdapter):
         return True
 
     async def _open_session(self) -> None:
-        """Open the socket, send hello, wait for welcome; raise _ConnectFailed with a verdict."""
+        """Open the socket, send hello, wait for welcome; raise _ConnectFailed with a verdict for
+        every failure, so neither connect() nor _reconnect() ever sees a raw exception."""
+        try:
+            await self._handshake()
+        except _ConnectFailed:
+            raise
+        except (InvalidProxy, ImportError):
+            # A bad HTTPS_PROXY/ALL_PROXY URL, or a SOCKS proxy without python-socks: retrying
+            # cannot help. The exception text can carry proxy credentials, so it is not logged.
+            raise _ConnectFailed(lifecycle.Verdict(False, 0.0, "storychat_proxy_invalid",
+                                                   PROXY_MSG)) from None
+        except Exception as exc:
+            logger.debug("[%s] unexpected StoryChat connect failure", self.name, exc_info=True)
+            raise _ConnectFailed(lifecycle.Verdict(
+                True, lifecycle.BACKOFF_START_S, "storychat_unreachable",
+                f"could not reach StoryChat ({type(exc).__name__}); retrying")) from None
+
+    async def _handshake(self) -> None:
         cfg = self._settings
         try:
             ws = await lifecycle.NoRedirectConnect(
@@ -205,6 +244,8 @@ class StoryChatAdapter(BasePlatformAdapter):
             except ConnectionClosed as exc:
                 raise _ConnectFailed(lifecycle.classify_close(_close_code(exc))) from None
             except protocol.ProtocolError:
+                logger.debug("[%s] StoryChat's welcome did not match protocol v1", self.name,
+                             exc_info=True)
                 await ws.close()
                 raise _ConnectFailed(lifecycle.classify_close(4400)) from None
             except TimeoutError:
@@ -371,21 +412,10 @@ class StoryChatAdapter(BasePlatformAdapter):
                            self.name, turn_id)
             await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
             return
-        # R-T12: config.yaml is re-read every turn (gateway/run_turn.py _load_gateway_config), so a
-        # config edit after startup could otherwise bypass the connect-time chat-only and display
-        # self-checks. Loaded once and shared so both checks see the same snapshot.
-        try:
-            cfg = toolset_policy.load_gateway_config()
-            effective = toolset_policy.effective_toolsets(self._toolset_override, cfg)
-            unsafe = toolset_policy.unsafe_display_settings(cfg)
-        except Exception:
-            logger.debug("[%s] toolset recheck failed", self.name, exc_info=True)
-            effective, unsafe = None, None
-        chat_only = toolset_policy.is_chat_only(self._toolset_override)
-        if (effective is None or (chat_only and toolset_policy.leaked_toolsets(effective))
-                or (not chat_only and "clarify" in effective) or unsafe):
-            logger.error("[%s] refused turn %s: the StoryChat toolsets changed since startup; "
-                         "fix config.yaml and restart the gateway", self.name, turn_id)
+        problem = self._recheck_toolsets(turn_id)
+        if problem is not None:
+            logger.error("[%s] refused turn %s: %s; fix config.yaml and restart the gateway",
+                         self.name, turn_id, problem)
             await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
             return
         source = self.build_source(chat_id=chat_id, chat_name=frame["chatName"], chat_type="dm",
@@ -414,6 +444,26 @@ class StoryChatAdapter(BasePlatformAdapter):
         logger.info("[%s] turn %s started", self.name, turn_id)
         await self.handle_message(event)
 
+    def _recheck_toolsets(self, turn_id: str) -> Optional[str]:
+        """R-T12: config.yaml is re-read every turn (gateway/run_turn.py _load_gateway_config), so a
+        config edit after startup could otherwise bypass the connect-time chat-only and display
+        self-checks. Loaded once so both checks see the same snapshot. Returns why the turn must be
+        refused, or None."""
+        try:
+            cfg = toolset_policy.load_gateway_config()
+            effective = toolset_policy.effective_toolsets(self._toolset_override, cfg)
+            unsafe = toolset_policy.unsafe_display_settings(cfg)
+        except Exception as exc:
+            logger.error("[%s] toolset recheck for turn %s failed: %s", self.name, turn_id,
+                         type(exc).__name__)
+            logger.debug("[%s] toolset recheck failure", self.name, exc_info=True)
+            return RECHECK_UNVERIFIED
+        chat_only = toolset_policy.is_chat_only(self._toolset_override)
+        if ((chat_only and toolset_policy.leaked_toolsets(effective))
+                or (not chat_only and "clarify" in effective)):
+            return TOOLSETS_CHANGED
+        return DISPLAY_CHANGED if unsafe else None
+
     def _hermes_session_busy(self, event: MessageEvent) -> bool:
         """Whether Hermes still holds this chat's session. Heals a stale guard first, exactly as
         Hermes' handle_message does on entry (base.py), so refusing here never traps the chat."""
@@ -434,7 +484,8 @@ class StoryChatAdapter(BasePlatformAdapter):
             # runs): the turn already ended in between, so there is nothing left to stop.
             return
         stop_id = uuid.uuid4().hex
-        self._turns[turn.chat_id] = replace(turn, stop_requested=True)
+        stopping = replace(turn, stop_requested=True)
+        self._turns[turn.chat_id] = stopping
         self._stop_ids[stop_id] = turn.turn_id
         while len(self._stop_ids) > MAX_STOP_IDS:
             del self._stop_ids[next(iter(self._stop_ids))]
@@ -442,8 +493,14 @@ class StoryChatAdapter(BasePlatformAdapter):
                                    user_id=self._user_id, user_name=turn.user_name)
         event = MessageEvent(text="/stop", message_type=MessageType.TEXT, source=source,
                              message_id=stop_id, allow_gateway_control=True)
-        if self._event_session_key(event) not in self._active_sessions:
-            # Nothing is running in Hermes for this chat; never /stop an idle session.
+        self._spawn(self._send_stop(stopping, event))
+
+    async def _send_stop(self, turn: _Turn, event: MessageEvent) -> None:
+        if self._turns.get(turn.chat_id) is not turn:
+            return  # the turn ended, or was replaced, before this task ran
+        # Checked here, with no await before handle_message: Hermes may release the session between
+        # _dispatch_stop and this task, and a /stop must never reach an idle session.
+        if not self._hermes_session_busy(event):
             self._turns.pop(turn.chat_id, None)
             self._approvals.drop_chat(turn.chat_id)
             self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != turn.turn_id}
@@ -451,7 +508,7 @@ class StoryChatAdapter(BasePlatformAdapter):
             await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, "interrupted"))
             return
         logger.info("[%s] stopping turn %s", self.name, turn.turn_id)
-        self._spawn(self.handle_message(event))
+        await self.handle_message(event)
 
     def _stop_tracked_turns(self) -> None:
         for turn in list(self._turns.values()):
@@ -559,17 +616,21 @@ class StoryChatAdapter(BasePlatformAdapter):
             # queue, so never fall back to a fresh uuid + later FIFO resolve: that could approve or
             # deny whatever unrelated command happens to be queue[0] when the decision arrives.
             return SendResult(success=False, error="approval is no longer pending in Hermes")
+        # The relay closes with 4400 on a schema miss (fatal here), so only send a card it accepts.
+        choices = tuple(dict.fromkeys(c for c in prompt.choices if c in protocol.APPROVAL_CHOICES))
+        if not choices or not protocol.is_opaque_id(request_id):
+            return SendResult(success=False, error="approval does not fit the StoryChat protocol")
         approval_id = request_id
         expires_at = int(time.time() * 1000) + int(approval_timeout_seconds()) * 1000
         try:
             frame = protocol.approval_request(
                 turn.turn_id, prompt.chat_id, approval_id, prompt.command, prompt.description,
-                prompt.choices, prompt.smart_denied, expires_at)
+                choices, prompt.smart_denied, expires_at)
         except protocol.FrameTooLarge as exc:
             return SendResult(success=False, error=str(exc))
         # Book it before sending so a fast decision can never find it missing.
         self._approvals.add(PendingApproval(approval_id, prompt.session_key, prompt.chat_id,
-                                            turn.turn_id, request_id, tuple(prompt.choices)))
+                                            turn.turn_id, request_id, choices))
         if not await self._send_frame(frame):
             self._approvals.remove(approval_id)
             return SendResult(success=False, error="not connected to StoryChat")
@@ -587,7 +648,8 @@ class StoryChatAdapter(BasePlatformAdapter):
                 pin: Optional[str]) -> Tuple[bool, Optional[str], Optional[int]]:
         from tools import approval as hermes_approval
         entry = self._approvals.find(approval_id)
-        if entry is None:
+        if entry is None or not entry.request_id:
+            # Without Hermes' request_id, resolve_gateway_approval would pick its OLDEST entry.
             return False, "expired", None
         live = hermes_approval.list_gateway_approvals(entry.session_key)
         self._approvals.reconcile(entry.session_key, {e["request_id"] for e in live if e.get("request_id")})
