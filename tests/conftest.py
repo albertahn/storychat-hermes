@@ -10,6 +10,18 @@ from pathlib import Path
 os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="storychat-hermes-home-")
 os.environ["HERMES_GATEWAY_LOCK_DIR"] = tempfile.mkdtemp(prefix="storychat-hermes-locks-")
 
+# Spec §9.2: without this, Hermes' tool-progress / interim-assistant lines carry no _interim_send
+# marker for storychat, so they'd go out as kind "reply" and the backend would save them as the
+# character's message. Every test's sandbox starts with the spec-recommended opt-out already set,
+# same as a real operator following §9.2 would configure.
+(Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+    "display:\n"
+    "  platforms:\n"
+    "    storychat:\n"
+    "      tool_progress: off\n"
+    "      long_running_notifications: off\n"
+    "      interim_assistant_messages: false\n")
+
 import pytest  # noqa: E402
 
 from support import TOKEN, USER_ID  # noqa: E402

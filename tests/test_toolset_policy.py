@@ -96,3 +96,27 @@ def test_accepts_names_hermes_itself_validates(raw):
     # _get_platform_tools resolves them, so rejecting them here would be stricter than Hermes
     # itself and would break a legitimate STORYCHAT_TOOLSETS value.
     assert toolset_policy.toolset_override(raw, config={}) == [raw, "no_mcp"]
+
+
+def test_no_display_config_leaves_progress_and_interim_messages_unsafe():
+    # Hermes' own tier defaults: tool_progress "all" and interim_assistant_messages True are ON
+    # everywhere a platform doesn't override them, and storychat has no built-in tier default.
+    assert toolset_policy.unsafe_display_settings(config={}) == [
+        "interim_assistant_messages", "tool_progress"]
+
+
+def test_the_spec_recommended_block_is_safe():
+    config = {"display": {"platforms": {"storychat": {
+        "tool_progress": "off", "interim_assistant_messages": False}}}}
+    assert toolset_policy.unsafe_display_settings(config=config) == []
+
+
+def test_a_global_tool_progress_override_with_no_platform_block_is_still_unsafe():
+    config = {"display": {"tool_progress": "all"}}
+    assert "tool_progress" in toolset_policy.unsafe_display_settings(config=config)
+
+
+def test_thinking_progress_is_checked_too():
+    config = {"display": {"platforms": {"storychat": {
+        "tool_progress": "off", "interim_assistant_messages": False, "thinking_progress": True}}}}
+    assert toolset_policy.unsafe_display_settings(config=config) == ["thinking_progress"]

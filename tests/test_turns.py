@@ -87,6 +87,19 @@ async def test_turn_is_refused_when_the_toolsets_changed_since_startup(monkeypat
     assert adapter._turns == {}
 
 
+async def test_turn_is_refused_when_display_would_leak_progress_as_a_reply(monkeypatch, live):
+    # Spec §9.2: a config edit after startup that turns tool_progress back on must not bypass the
+    # connect-time display self-check either (same R-T12 concern as the toolsets recheck above).
+    adapter, server = live
+    from storychat_hermes import toolset_policy
+    monkeypatch.setattr(toolset_policy, "load_gateway_config", lambda: {})
+    await server.push("message", **message_frame())
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "error"}
+    assert adapter.handle_message.await_count == 0
+    assert adapter._turns == {}
+
+
 async def test_reply_send_and_edit_strip_the_stream_cursor(live):
     adapter, server = live
     await start_turn(adapter, server)

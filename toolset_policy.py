@@ -99,3 +99,26 @@ def effective_toolsets(override: List[str], config: Optional[dict] = None) -> Li
 def leaked_toolsets(effective: Iterable[str]) -> List[str]:
     """Toolsets that must not be present in chat-only mode."""
     return sorted(set(effective) - CHAT_ONLY_TOLERATED)
+
+
+def unsafe_display_settings(config: Optional[dict] = None) -> List[str]:
+    """Gateway display surfaces that would still stream to StoryChat as the character's reply
+    (spec §9.2): unlike ``long_running_notifications`` (always sent with ``_interim_send`` —
+    ``gateway/run.py`` ``_interim_metadata``, ``run_turn.py`` L4208), tool-progress and interim-
+    assistant lines carry no such marker for storychat (``_non_conversational_metadata`` only
+    special-cases Discord), so if they resolve ON they would go out with ``send`` kind "reply" and
+    get saved as the character's message. Resolved exactly the way ``gateway/run_turn.py``
+    (L2961-3014) resolves them for a live turn."""
+    from agent.secret_scope import get_secret
+    from gateway.display_config import resolve_display_setting, resolve_tool_progress
+    cfg = load_gateway_config() if config is None else config
+    unsafe: List[str] = []
+    progress_mode, _explicit = resolve_tool_progress(cfg, PLATFORM, get_secret("HERMES_TOOL_PROGRESS_MODE"))
+    if progress_mode not in {"off", "log"}:
+        unsafe.append("tool_progress")
+    for setting, default in (("interim_assistant_messages", True), ("thinking_progress", False)):
+        value = resolve_display_setting(cfg, PLATFORM, setting, default)
+        is_generic = isinstance(value, str) and value.strip().lower() == "generic"
+        if not is_generic and bool(value):
+            unsafe.append(setting)
+    return sorted(unsafe)

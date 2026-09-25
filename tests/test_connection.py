@@ -65,6 +65,19 @@ async def test_leaked_toolsets_refuse_to_connect(monkeypatch, storychat_env):
         assert server.requests == []
 
 
+async def test_unsafe_display_settings_refuse_to_connect(monkeypatch, storychat_env):
+    from storychat_hermes import toolset_policy
+    monkeypatch.setattr(toolset_policy, "load_gateway_config", lambda: {})
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is False
+        assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == (
+            "storychat_display_unsafe", False)
+        assert "tool_progress" in adapter.fatal_error_message
+        assert server.requests == []
+
+
 async def test_opt_in_warns_once_about_character_cards(monkeypatch, storychat_env, caplog):
     monkeypatch.setenv("STORYCHAT_TOOLSETS", "web")
     async with FakeStoryChat() as server:

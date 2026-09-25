@@ -146,6 +146,20 @@ class StoryChatAdapter(BasePlatformAdapter):
             logger.warning("[%s] STORYCHAT_TOOLSETS enables %s. Imported or cloned character "
                            "cards can carry instructions; every dangerous command still needs "
                            "your approval PIN.", self.name, ", ".join(effective) or "no toolsets")
+        try:
+            unsafe = toolset_policy.unsafe_display_settings()
+        except Exception as exc:
+            return self._fail("storychat_toolsets_unverified",
+                              f"could not verify the StoryChat display settings ({type(exc).__name__}); "
+                              "refusing to connect", retryable=False)
+        if unsafe:
+            return self._fail(
+                "storychat_display_unsafe",
+                "these StoryChat display settings are still on: "
+                f"{', '.join(unsafe)}. Hermes would send them to StoryChat as the character's "
+                "reply. Set them off under display.platforms.storychat in config.yaml "
+                "(tool_progress: off, interim_assistant_messages: false, thinking_progress: "
+                "false), then restart the gateway.", retryable=False)
         self._toolset_override, self._effective_toolsets = override, effective
         return True
 
@@ -314,15 +328,18 @@ class StoryChatAdapter(BasePlatformAdapter):
             await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
             return
         # R-T12: config.yaml is re-read every turn (gateway/run_turn.py _load_gateway_config), so a
-        # config edit after startup could otherwise bypass the connect-time chat-only self-check.
+        # config edit after startup could otherwise bypass the connect-time chat-only and display
+        # self-checks. Loaded once and shared so both checks see the same snapshot.
         try:
-            effective = toolset_policy.effective_toolsets(self._toolset_override)
+            cfg = toolset_policy.load_gateway_config()
+            effective = toolset_policy.effective_toolsets(self._toolset_override, cfg)
+            unsafe = toolset_policy.unsafe_display_settings(cfg)
         except Exception:
             logger.debug("[%s] toolset recheck failed", self.name, exc_info=True)
-            effective = None
+            effective, unsafe = None, None
         chat_only = toolset_policy.is_chat_only(self._toolset_override)
         if (effective is None or (chat_only and toolset_policy.leaked_toolsets(effective))
-                or (not chat_only and "clarify" in effective)):
+                or (not chat_only and "clarify" in effective) or unsafe):
             logger.error("[%s] refused turn %s: the StoryChat toolsets changed since startup; "
                          "fix config.yaml and restart the gateway", self.name, turn_id)
             await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
