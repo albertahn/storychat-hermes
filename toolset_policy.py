@@ -17,6 +17,12 @@ CHAT_ONLY_TOLERATED = frozenset({"x_search", "context_engine"})
 ALWAYS_REMOVED = frozenset({"clarify"})
 
 
+class ToolsetPolicyError(ValueError):
+    """STORYCHAT_TOOLSETS names something Hermes doesn't recognize as a toolset key and that isn't
+    a currently enabled MCP server; silently accepting it would leave the intended override
+    unclear (and could fall through to the no-allowlist branch that exposes every MCP server)."""
+
+
 def load_gateway_config() -> dict:
     """The gateway's effective config.yaml, exactly as the runner loads it for every turn."""
     from gateway.run import _load_gateway_config
@@ -32,15 +38,38 @@ def parse_toolsets(raw: str) -> List[str]:
     return seen
 
 
+def _known_toolset_keys() -> frozenset:
+    """Configurable + plugin + platform-default toolset keys — the same three sets
+    ``hermes_cli.tools_config._get_platform_tools`` excludes when it computes ``explicit_passthrough``.
+    A name outside this union is either an MCP server name or genuinely unknown."""
+    from hermes_cli.tools_config import _configurable_keys, _get_plugin_toolset_keys, _platform_default_keys
+    return frozenset(_configurable_keys() | _get_plugin_toolset_keys() | _platform_default_keys())
+
+
 def toolset_override(raw: str, config: Optional[dict] = None) -> List[str]:
     """Chat-only → ``["no_mcp"]``; opt-in → the named toolsets minus clarify, plus ``no_mcp``
-    unless the user named an MCP server."""
+    unless the user named an MCP server. "Named an MCP server" follows Hermes's own passthrough
+    rule: only names that are NOT a configurable, plugin, or platform-default toolset key count as
+    an MCP allowlist entry — otherwise a toolset that happens to share its name with a configured
+    MCP server (e.g. a built-in ``memory`` toolset alongside an MCP server also named ``memory``)
+    would be mistaken for naming that server, skip the sentinel, and leak every enabled MCP server.
+
+    Raises :class:`ToolsetPolicyError` for a name that resolves to no known toolset and no enabled
+    MCP server, instead of silently letting it become an unchecked (and leaky) opt-in."""
     names = [n for n in parse_toolsets(raw) if n not in ALWAYS_REMOVED]
     if not names:
         return list(CHAT_ONLY_SENTINEL)
     from hermes_cli.tools_config import enabled_mcp_server_names
-    mcp_servers = enabled_mcp_server_names(load_gateway_config() if config is None else config)
-    if "no_mcp" not in names and not set(names) & mcp_servers:
+    cfg = load_gateway_config() if config is None else config
+    mcp_servers = enabled_mcp_server_names(cfg)
+    known_keys = _known_toolset_keys()
+    unknown = [n for n in names if n not in CHAT_ONLY_SENTINEL and n not in known_keys and n not in mcp_servers]
+    if unknown:
+        raise ToolsetPolicyError(
+            "STORYCHAT_TOOLSETS names unknown toolset(s): {}; leave STORYCHAT_TOOLSETS empty for "
+            "chat only".format(", ".join(unknown)))
+    named_mcp_servers = (set(names) - known_keys) & mcp_servers
+    if "no_mcp" not in names and not named_mcp_servers:
         names.append("no_mcp")
     return names
 
