@@ -388,6 +388,11 @@ class StoryChatAdapter(BasePlatformAdapter):
                              message_id=frame["messageId"],
                              channel_prompt=frame["channelPrompt"] or None,
                              allow_gateway_control=False)
+        if running is not None:
+            # Only reachable here when running.stop_requested (the guard above already refused any
+            # other case): the old turn's on_processing_complete never runs, so its approvals would
+            # otherwise stay answerable forever once this new turn supersedes it.
+            self._approvals.drop_chat(chat_id)
         self._turns[chat_id] = _Turn(turn_id, chat_id, frame["messageId"], frame["userName"],
                                      frame["chatName"])
         logger.info("[%s] turn %s started", self.name, turn_id)

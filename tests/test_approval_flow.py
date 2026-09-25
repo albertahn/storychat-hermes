@@ -214,6 +214,22 @@ async def test_decision_resolves_only_the_cards_own_request_id(live):
     assert queue.live == []
 
 
+async def test_message_admitted_while_stopped_drops_the_old_turns_approvals(live):
+    # A reviewer-found bug: once B is admitted over a stopped A, A's on_processing_complete never
+    # runs (Hermes treats that turn as superseded), so without this cleanup A's approvalId would
+    # stay answerable forever, invisible to StoryChat's own turn/approval UI for the new turn.
+    adapter, server, queue = live
+    await request(adapter, server, queue, RID_1)
+    event = adapter.handle_message.await_args.args[0]
+    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
+    await wait_until(lambda: adapter.handle_message.await_count == 2)
+    turn_b, message_b_id = "e" * 32, "65c0000000000000000000d4"
+    await server.push("message", **message_frame(turnId=turn_b, messageId=message_b_id))
+    await wait_until(lambda: adapter.handle_message.await_count == 3)
+    assert (await decide(server, RID_1, "deny"))["reason"] == "expired"
+
+
 async def test_correlation_against_the_real_hermes_queue(live, monkeypatch):
     adapter, _, _ = live
     monkeypatch.setattr(tools.approval, "list_gateway_approvals", REAL_LIST_GATEWAY_APPROVALS)
