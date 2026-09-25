@@ -175,19 +175,57 @@ class StoryChatAdapter(BasePlatformAdapter):
         self._mark_connected()
 
     async def _run(self) -> None:
-        """Read frames until the socket closes."""
-        await self._pump()
-        self._ws = None
-        if not self._closing:
+        """Read frames until the socket closes, then reconnect on this same instance."""
+        while not self._closing:
+            verdict = await self._pump()
+            self._ws = None
+            if self._closing:
+                return
             self._mark_disconnected()
+            if not verdict.retry:
+                await self._go_fatal(verdict, retryable=False)
+                return
+            logger.warning("[%s] %s", self.name, verdict.message)
+            if not await self._reconnect(verdict.backoff_start):
+                return
 
-    async def _pump(self) -> None:
-        with contextlib.suppress(ConnectionClosed):
-            async for raw in self._ws:
+    async def _pump(self) -> lifecycle.Verdict:
+        ws = self._ws
+        try:
+            async for raw in ws:
                 try:
                     await self._handle_frame(raw)
                 except Exception as exc:
                     logger.error("[%s] frame handler failed: %s", self.name, type(exc).__name__)
+        except ConnectionClosed as exc:
+            return lifecycle.classify_close(_close_code(exc))
+        return lifecycle.classify_close(ws.close_code)
+
+    async def _reconnect(self, start: float) -> bool:
+        attempt = 0
+        while not self._closing:
+            await self._sleep(lifecycle.backoff_delay(attempt, start, self._rng))
+            attempt += 1
+            try:
+                await self._open_session()
+                return True
+            except _ConnectFailed as exc:
+                verdict = exc.verdict
+            if not verdict.retry:
+                await self._go_fatal(verdict, retryable=False)
+                return False
+            if attempt >= lifecycle.MAX_RECONNECT_ATTEMPTS:
+                await self._go_fatal(verdict, retryable=True)
+                return False
+            if verdict.backoff_start > start:
+                start, attempt = verdict.backoff_start, 0
+            logger.warning("[%s] %s", self.name, verdict.message)
+        return False
+
+    async def _go_fatal(self, verdict: lifecycle.Verdict, *, retryable: bool) -> None:
+        logger.error("[%s] %s", self.name, verdict.message)
+        self._set_fatal_error(verdict.code, verdict.message, retryable=retryable)
+        await self._notify_fatal_error()
 
     async def disconnect(self) -> None:
         self._closing = True

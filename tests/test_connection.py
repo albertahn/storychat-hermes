@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import os
 from pathlib import Path
 
 import pytest
 
-from support import CHAT_ID, TOKEN, FakeStoryChat, make_adapter
+from support import CHAT_ID, TOKEN, FakeStoryChat, make_adapter, wait_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -187,4 +188,77 @@ async def test_allowlist_entries_are_trimmed_and_matched_ignoring_case(monkeypat
         assert await adapter.connect() is True
         # Hermes' own allowlist check is an exact string match, so it must get the listed spelling.
         assert adapter._user_id == "64B0000000000000000000A1"
+        await adapter.disconnect()
+
+
+def fatal_recorder(adapter):
+    calls = []
+
+    async def handler(failed):
+        calls.append((failed.fatal_error_code, failed.fatal_error_retryable))
+
+    adapter.set_fatal_error_handler(handler)
+    return calls
+
+
+@pytest.mark.parametrize("close_code,code", [(4001, "storychat_replaced"),
+                                             (4003, "storychat_token_rejected"),
+                                             (4400, "storychat_protocol_mismatch"),
+                                             (1009, "storychat_protocol_mismatch")])
+async def test_fatal_close_codes_stop_retrying(monkeypatch, storychat_env, close_code, code):
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        fatal = fatal_recorder(adapter)
+        assert await adapter.connect() is True
+        await server.close_client(close_code)
+        await wait_until(lambda: fatal)
+        assert fatal == [(code, False)]
+        assert len(server.hellos) == 1
+        await adapter.disconnect()
+
+
+async def test_unexpected_close_reconnects_on_the_same_instance(monkeypatch, storychat_env):
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        await server.close_client(1011)
+        await wait_until(lambda: len(server.hellos) == 2 and adapter.is_connected)
+        assert 1.0 <= adapter.slept[0] <= 1.25
+        await adapter.disconnect()
+
+
+async def test_rate_limited_close_backs_off_from_sixty_seconds(monkeypatch, storychat_env):
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        await server.close_client(4429)
+        await wait_until(lambda: len(server.hellos) == 2)
+        assert 60.0 <= adapter.slept[0] <= 75.0
+        await adapter.disconnect()
+
+
+async def test_hands_off_to_hermes_after_ten_failed_reconnects(monkeypatch, storychat_env):
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        fatal = fatal_recorder(adapter)
+        gate = asyncio.Event()
+
+        async def gated_sleep(delay):
+            adapter.slept.append(delay)
+            await gate.wait()
+
+        adapter._sleep = gated_sleep
+        assert await adapter.connect() is True
+        await server.close_client(1012)
+        await wait_until(lambda: adapter.slept)  # the adapter is waiting to reconnect
+        server._server.close()
+        await server._server.wait_closed()  # from now on every reconnect is refused
+        gate.set()
+        await wait_until(lambda: fatal)
+        assert fatal == [("storychat_unreachable", True)]
+        assert len(adapter.slept) == 10
         await adapter.disconnect()
