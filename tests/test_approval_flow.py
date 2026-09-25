@@ -230,6 +230,19 @@ async def test_message_admitted_while_stopped_drops_the_old_turns_approvals(live
     assert (await decide(server, RID_1, "deny"))["reason"] == "expired"
 
 
+async def test_socket_drop_clears_pending_approvals(live):
+    adapter, server, queue = live
+    await request(adapter, server, queue, RID_1)
+    event = adapter.handle_message.await_args.args[0]
+    # Keep Hermes "still running" so the post-reconnect _stop_tracked_turns dispatches a /stop
+    # message instead of ending the turn on the spot (which would race an extra turn_end frame
+    # against this test's own approval_decision frame).
+    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    await server.close_client(1011)
+    await wait_until(lambda: len(server.hellos) == 2 and adapter.is_connected)
+    assert (await decide(server, RID_1, "deny"))["reason"] == "expired"
+
+
 async def test_correlation_against_the_real_hermes_queue(live, monkeypatch):
     adapter, _, _ = live
     monkeypatch.setattr(tools.approval, "list_gateway_approvals", REAL_LIST_GATEWAY_APPROVALS)
