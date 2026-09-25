@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Daily, so a Hermes main change that breaks the plugin contract (for example the runner no
+  # longer honouring toolsets_for_source) fails CI even when this repo has no new commits.
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
 
 jobs:
   test:
