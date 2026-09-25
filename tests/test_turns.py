@@ -128,8 +128,12 @@ async def test_untracked_events_send_no_turn_end(live):
     event = await start_turn(adapter, server)
     await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
     await server.next_frame()
-    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-    assert server.frames.empty()
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)  # already ended: a no-op
+    other = "f" * 32
+    await server.push("message", **message_frame(turnId=other, userId="64b0000000000000000000ff"))
+    # The next frame the relay sees must be THIS refusal, not a stray turn_end leaked by the no-op.
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": other,
+                                         "chatId": CHAT_ID, "reason": "error"}
 
 
 async def test_logs_never_carry_chat_text_or_the_channel_prompt(live, caplog):
