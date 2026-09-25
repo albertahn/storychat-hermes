@@ -30,6 +30,8 @@ def _isolate(monkeypatch, tmp_path):
     for name in _STORYCHAT_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    from storychat_hermes import adapter
+    monkeypatch.setattr(adapter, "_opt_in_warned", False)
 
 
 @pytest.fixture
