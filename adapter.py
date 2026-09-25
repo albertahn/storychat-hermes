@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import random
+import time
 import uuid
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,8 +22,10 @@ from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
+from . import approvals as approvals_mod
 from . import lifecycle, protocol, toolset_policy
 from . import settings as settings_mod
+from .approvals import ApprovalBook, PendingApproval, correlate_request_id
 
 logger = logging.getLogger(__name__)
 # websockets logs every header and frame at DEBUG (the Bearer token, chat text, the PIN). Its logger
@@ -88,6 +91,8 @@ class StoryChatAdapter(BasePlatformAdapter):
         self._msg_kinds: Dict[str, Tuple[str, str]] = {}  # msgId -> (turnId, kind)
         self._stop_ids: Dict[str, str] = {}  # synthetic /stop message_id -> turnId
         self._aux_tasks: set = set()
+        self._approvals = ApprovalBook()
+        self._pin_guard = approvals_mod.PIN_GUARD
         self._sleep = asyncio.sleep  # tests replace these two
         self._rng = random.Random()
 
@@ -225,6 +230,7 @@ class StoryChatAdapter(BasePlatformAdapter):
             self._ws = None
             if self._closing:
                 return
+            self._approvals.clear()  # the relay dropped every pending approval with the socket
             self._mark_disconnected()
             if not verdict.retry:
                 await self._go_fatal(verdict, retryable=False)
@@ -298,6 +304,7 @@ class StoryChatAdapter(BasePlatformAdapter):
                             exc_info=True)
         for aux in list(self._aux_tasks):
             aux.cancel()
+        self._approvals.clear()
         self._turns = {}
         self._msg_kinds = {}
 
@@ -346,6 +353,8 @@ class StoryChatAdapter(BasePlatformAdapter):
             await self._on_message(frame)
         elif frame["type"] == "stop":
             await self._on_stop(frame)
+        elif frame["type"] == "approval_decision":
+            await self._on_approval_decision(frame)
 
     async def _on_message(self, frame: Dict[str, Any]) -> None:
         turn_id, chat_id = frame["turnId"], frame["chatId"]
@@ -408,6 +417,7 @@ class StoryChatAdapter(BasePlatformAdapter):
         if self._event_session_key(event) not in self._active_sessions:
             # Nothing is running in Hermes for this chat; never /stop an idle session.
             self._turns.pop(turn.chat_id, None)
+            self._approvals.drop_chat(turn.chat_id)
             self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != turn.turn_id}
             logger.info("[%s] turn %s ended: %s", self.name, turn.turn_id, "interrupted")
             await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, "interrupted"))
@@ -454,6 +464,11 @@ class StoryChatAdapter(BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *,
                            finalize: bool = False) -> SendResult:
+        if self._approvals.remove(message_id) is not None:
+            # Hermes timed the approval out and edits its card: tell StoryChat instead (spec §6).
+            ok = await self._send_frame(protocol.approval_expired(message_id))
+            return SendResult(success=ok, message_id=message_id,
+                              error=None if ok else "not connected to StoryChat")
         known = self._msg_kinds.get(message_id)
         turn = self._turns.get(chat_id)
         if known is None or turn is None or turn.turn_id != known[0]:
@@ -472,12 +487,73 @@ class StoryChatAdapter(BasePlatformAdapter):
         if turn is None or turn.message_id != event.message_id:
             return
         self._turns.pop(turn.chat_id, None)
+        self._approvals.drop_chat(turn.chat_id)
         self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != turn.turn_id}
         reason = "interrupted" if turn.stop_requested else _OUTCOME_REASONS.get(outcome, "error")
         logger.info("[%s] turn %s ended: %s", self.name, turn.turn_id, reason)
         if not await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, reason)):
             logger.warning("[%s] could not send turn_end for turn %s (not connected)",
                            self.name, turn.turn_id)
+
+    # ── approvals (spec §6, §8, §9.3) ───────────────────────────────────────
+
+    async def _send_exec_approval_prompt(self, prompt: Any) -> SendResult:
+        from gateway.platforms.base_exec_approval import approval_timeout_seconds
+        from tools import approval as hermes_approval
+        turn = self._turns.get(prompt.chat_id)
+        if turn is None or self._ws is None:
+            return SendResult(success=False, error="no active StoryChat turn for this chat")
+        request_id = correlate_request_id(
+            prompt.command, prompt.description,
+            hermes_approval.list_gateway_approvals(prompt.session_key),
+            self._approvals.tracked_request_ids(prompt.session_key))
+        approval_id = request_id or uuid.uuid4().hex
+        expires_at = int(time.time() * 1000) + int(approval_timeout_seconds()) * 1000
+        try:
+            frame = protocol.approval_request(
+                turn.turn_id, prompt.chat_id, approval_id, prompt.command, prompt.description,
+                prompt.choices, prompt.smart_denied, expires_at)
+        except protocol.FrameTooLarge as exc:
+            return SendResult(success=False, error=str(exc))
+        # Book it before sending so a fast decision can never find it missing.
+        self._approvals.add(PendingApproval(approval_id, prompt.session_key, prompt.chat_id,
+                                            turn.turn_id, request_id, tuple(prompt.choices)))
+        if not await self._send_frame(frame):
+            self._approvals.remove(approval_id)
+            return SendResult(success=False, error="not connected to StoryChat")
+        return SendResult(success=True, message_id=approval_id)
+
+    async def _on_approval_decision(self, frame: Dict[str, Any]) -> None:
+        approval_id = frame["approvalId"]
+        resolved, reason, attempts_left = self._decide(approval_id, frame["choice"], frame.get("pin"))
+        logger.info("[%s] approval %s resolved=%s reason=%s", self.name, approval_id, resolved, reason)
+        await self._send_frame(protocol.approval_ack(approval_id, resolved, reason, attempts_left))
+
+    def _decide(self, approval_id: str, choice: str,
+                pin: Optional[str]) -> Tuple[bool, Optional[str], Optional[int]]:
+        from tools import approval as hermes_approval
+        entry = self._approvals.find(approval_id)
+        if entry is None:
+            return False, "expired", None
+        live = hermes_approval.list_gateway_approvals(entry.session_key)
+        self._approvals.reconcile(entry.session_key, {e["request_id"] for e in live if e.get("request_id")})
+        if self._approvals.find(approval_id) is None:
+            return False, "expired", None
+        if self._approvals.head(entry.session_key).approval_id != approval_id:
+            return False, "not_oldest", None
+        if choice not in entry.choices:
+            return False, None, None
+        if choice != "deny":
+            reason, attempts_left = self._pin_guard.check(self._settings.approval_pin, pin)
+            if reason is not None:
+                return False, reason, attempts_left
+        if entry.request_id:
+            count = hermes_approval.resolve_gateway_approval(
+                entry.session_key, choice, request_id=entry.request_id)
+        else:
+            count = hermes_approval.resolve_gateway_approval(entry.session_key, choice)
+        self._approvals.remove(approval_id)
+        return (True, None, None) if count > 0 else (False, "expired", None)
 
 
 # ── plugin registration (spec §9.1) ─────────────────────────────────────────
