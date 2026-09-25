@@ -1,6 +1,9 @@
 """The setup guide must carry the design spec's §9.2 blocks byte for byte."""
 
+import ast
+import inspect
 import io
+import textwrap
 from pathlib import Path
 
 from support import TOKEN, USER_ID
@@ -83,16 +86,53 @@ def test_a_non_prod_block_with_both_url_lines_reaches_the_local_relay(monkeypatc
     assert (cfg.url, cfg.is_local_dev) == ("ws://localhost:8080/api/v1/hermes/connect", True)
 
 
-def test_troubleshooting_carries_the_clarify_and_display_refusal_messages():
-    # Pins README prose added after the plan (task 18 controller rulings 4-5): progress/display
-    # settings must stay off, and the clarify + display refusals' fixed leading text (copied from
-    # adapter.py's _check_toolsets, which defines no separate message constants for these two)
-    # must appear verbatim so the guide cannot silently drift from the code that raises them.
+def _logger_error_format(func, keyword: str) -> str:
+    """Return the literal format string passed to a ``logger.error(...)`` call inside ``func``
+    whose text contains ``keyword``. Reads the AST rather than re-typing the message, so adjacent
+    string literals are folded exactly as Python folds them at parse time and the check breaks the
+    moment the source message changes, instead of silently drifting from a copied literal."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "error" and node.args
+                and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+                and keyword in node.args[0].value):
+            return node.args[0].value
+    raise AssertionError(f"no logger.error(...) call containing {keyword!r} found in {func!r}")
+
+
+def test_troubleshooting_carries_the_refusals_added_after_the_plan():
+    # Pins every troubleshooting row added after the plan (task 18 controller rulings 3-5): the
+    # unknown-toolset, clarify and display refusals, the per-turn refusal, and the "progress
+    # messages stay off" prose. Each fixed string is derived from the module that raises it —
+    # either a real raised exception or the AST of the logger.error(...) call — rather than
+    # copied as a literal, so a change to the source message fails this test instead of letting
+    # the README silently drift from the code.
+    from storychat_hermes import adapter, toolset_policy
+
     assert "thinking_progress" in README
+
     clarify_prefix = (
         "STORYCHAT_TOOLSETS brings in the clarify toolset (through a bundle such as "
         "hermes-cli, coding or all), and StoryChat cannot answer clarify questions, so "
         "turns would hang.")
     assert clarify_prefix in README
+
     display_prefix = "these StoryChat display settings are still on:"
     assert display_prefix in README
+
+    # Unknown-toolset refusal (toolset_policy.ToolsetPolicyError): trigger the real exception and
+    # split its message around the unknown name to get the fixed prefix/suffix around it.
+    try:
+        toolset_policy.toolset_override("definitely-not-a-real-toolset", config={})
+        raise AssertionError("expected ToolsetPolicyError")
+    except toolset_policy.ToolsetPolicyError as exc:
+        unknown_prefix, _, unknown_suffix = str(exc).partition("definitely-not-a-real-toolset")
+    assert unknown_prefix and unknown_prefix in README
+    assert unknown_suffix and unknown_suffix in README
+
+    # Per-turn refusal (adapter.py _on_message logs it, there is no message constant): pull the
+    # literal logger.error format string and take the fixed part after "refused turn %s".
+    per_turn_fmt = _logger_error_format(adapter.StoryChatAdapter._on_message, "refused turn")
+    _, _, per_turn_suffix = per_turn_fmt.partition("refused turn %s")
+    assert per_turn_suffix and per_turn_suffix in README
