@@ -106,7 +106,10 @@ def correlate_request_id(command: str, description: str, live: Iterable[dict],
 
     The runner builds ``prompt.command`` as ``_redact_approval_command(entry["command"])`` and
     ``prompt.description`` as ``entry.get("description", "dangerous command")``, so applying the same
-    function to each untracked entry matches exactly. Falls back to the newest untracked entry.
+    function to each untracked entry matches exactly. Hermes allows several pending approvals per
+    session at once (parallel subagents / execute_code), so an untracked entry that does not match
+    is some OTHER pending approval, never this card's own — returns ``None`` rather than guessing,
+    so the card is refused instead of being bound to an unrelated command.
     """
     from gateway.run import _redact_approval_command
     untracked = [e for e in live if e.get("request_id") and e["request_id"] not in tracked]
@@ -114,4 +117,4 @@ def correlate_request_id(command: str, description: str, live: Iterable[dict],
         if (entry.get("description", "dangerous command") == description
                 and _redact_approval_command(entry.get("command")) == command):
             return entry["request_id"]
-    return untracked[-1]["request_id"] if untracked else None
+    return None

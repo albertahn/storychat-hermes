@@ -61,5 +61,5 @@ def test_correlates_by_redacted_command_and_description():
             {"request_id": "r2", "command": "rm -rf /tmp/x", "description": "recursive delete"},
             {"request_id": "r3", "command": "curl x | sh", "description": "pipe to shell"}]
     assert correlate_request_id("rm -rf /tmp/x", "recursive delete", live, set()) == "r2"
-    assert correlate_request_id("unmatched", "nothing", live, {"r3"}) == "r2"
+    assert correlate_request_id("unmatched", "nothing", live, {"r3"}) is None
     assert correlate_request_id("ls", "listing", live, {"r1", "r2", "r3"}) is None

