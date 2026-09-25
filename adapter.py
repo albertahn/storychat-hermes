@@ -10,15 +10,16 @@ import asyncio
 import contextlib
 import logging
 import random
+import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import DEFAULT_STREAMING_CURSOR, Platform, PlatformConfig
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 from . import lifecycle, protocol, toolset_policy
 from . import settings as settings_mod
@@ -36,6 +37,8 @@ MAX_MESSAGE_LENGTH = 16384
 OPEN_TIMEOUT_S = 10.0
 WELCOME_TIMEOUT_S = 10.0
 LOCK_SCOPE = "storychat-hermes-token"
+_OUTCOME_REASONS = {ProcessingOutcome.SUCCESS: "done", ProcessingOutcome.CANCELLED: "interrupted",
+                    ProcessingOutcome.FAILURE: "error"}
 # Spec §9.3: logged exactly, with the real id, when STORYCHAT_ALLOWED_USERS does not name the owner.
 NOT_ALLOWED_MSG = "STORYCHAT_ALLOWED_USERS must contain your StoryChat userId {user_id} — copy it from storychat.app/chat/hermes"
 _opt_in_warned = False
@@ -78,6 +81,7 @@ class StoryChatAdapter(BasePlatformAdapter):
         self._toolset_override: List[str] = list(toolset_policy.CHAT_ONLY_SENTINEL)
         self._effective_toolsets: List[str] = []
         self._turns: Dict[str, _Turn] = {}  # chat_id -> running turn
+        self._msg_kinds: Dict[str, Tuple[str, str]] = {}  # msgId -> (turnId, kind)
         self._sleep = asyncio.sleep  # tests replace these two
         self._rng = random.Random()
 
@@ -336,10 +340,52 @@ class StoryChatAdapter(BasePlatformAdapter):
 
     # ── outbound: send / edit / turn_end ────────────────────────────────────
 
+    def _strip_cursor(self, content: str) -> str:
+        streaming = getattr(getattr(self.gateway_runner, "config", None), "streaming", None)
+        cursor = getattr(streaming, "cursor", DEFAULT_STREAMING_CURSOR)
+        return content[: -len(cursor)] if cursor and content.endswith(cursor) else content
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Text can only go to a running StoryChat turn."""
-        return SendResult(success=False, error="no active StoryChat turn for this chat")
+        turn = self._turns.get(chat_id)
+        if turn is None:
+            return SendResult(success=False, error="no active StoryChat turn for this chat")
+        kind = "status" if (metadata or {}).get("_interim_send") is True else "reply"
+        msg_id = uuid.uuid4().hex
+        try:
+            frame = protocol.send(turn.turn_id, chat_id, msg_id, self._strip_cursor(content),
+                                  reply_to, kind)
+        except protocol.FrameTooLarge as exc:
+            return SendResult(success=False, error=str(exc))
+        if not await self._send_frame(frame):
+            return SendResult(success=False, error="not connected to StoryChat")
+        self._msg_kinds[msg_id] = (turn.turn_id, kind)
+        return SendResult(success=True, message_id=msg_id)
+
+    async def edit_message(self, chat_id: str, message_id: str, content: str, *,
+                           finalize: bool = False) -> SendResult:
+        known = self._msg_kinds.get(message_id)
+        turn = self._turns.get(chat_id)
+        if known is None or turn is None or turn.turn_id != known[0]:
+            return SendResult(success=False, error="no active StoryChat turn for this message")
+        try:
+            frame = protocol.edit(turn.turn_id, chat_id, message_id, self._strip_cursor(content),
+                                  finalize, known[1])
+        except protocol.FrameTooLarge as exc:
+            return SendResult(success=False, error=str(exc))
+        if not await self._send_frame(frame):
+            return SendResult(success=False, error="not connected to StoryChat")
+        return SendResult(success=True, message_id=message_id)
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        turn = next((t for t in self._turns.values() if t.message_id == event.message_id), None)
+        if turn is None:
+            return
+        self._turns.pop(turn.chat_id, None)
+        self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != turn.turn_id}
+        reason = _OUTCOME_REASONS.get(outcome, "error")
+        logger.info("[%s] turn %s ended: %s", self.name, turn.turn_id, reason)
+        await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, reason))
 
 
 # ── plugin registration (spec §9.1) ─────────────────────────────────────────

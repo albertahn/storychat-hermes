@@ -1,8 +1,11 @@
+import logging
+
 import pytest
 import pytest_asyncio
 
 from gateway.config import Platform
-from support import (CHAT_ID, MESSAGE_ID, TURN_ID, USER_ID, FakeStoryChat, make_adapter,
+from gateway.platforms.event import ProcessingOutcome
+from support import (CHAT_ID, MESSAGE_ID, TOKEN, TURN_ID, USER_ID, FakeStoryChat, make_adapter,
                      message_frame, wait_until)
 
 pytestmark = pytest.mark.asyncio
@@ -82,3 +85,60 @@ async def test_turn_is_refused_when_the_toolsets_changed_since_startup(monkeypat
                                          "chatId": CHAT_ID, "reason": "error"}
     assert adapter.handle_message.await_count == 0
     assert adapter._turns == {}
+
+
+async def test_reply_send_and_edit_strip_the_stream_cursor(live):
+    adapter, server = live
+    await start_turn(adapter, server)
+    sent = await adapter.send(CHAT_ID, "Ahoy ▉", reply_to=MESSAGE_ID)
+    assert sent.success is True
+    assert await server.next_frame() == {"v": 1, "type": "send", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "msgId": sent.message_id,
+                                         "content": "Ahoy", "replyTo": MESSAGE_ID, "kind": "reply"}
+    edited = await adapter.edit_message(CHAT_ID, sent.message_id, "Ahoy, matey", finalize=True)
+    assert edited.success is True
+    assert await server.next_frame() == {"v": 1, "type": "edit", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "msgId": sent.message_id,
+                                         "content": "Ahoy, matey", "final": True, "kind": "reply"}
+
+
+async def test_interim_sends_are_status(live):
+    adapter, server = live
+    await start_turn(adapter, server)
+    sent = await adapter.send(CHAT_ID, "Working…", metadata={"_interim_send": True})
+    assert (await server.next_frame())["kind"] == "status"
+    await adapter.edit_message(CHAT_ID, sent.message_id, "Still working…")
+    assert (await server.next_frame())["kind"] == "status"
+
+
+@pytest.mark.parametrize("outcome,reason", [(ProcessingOutcome.SUCCESS, "done"),
+                                            (ProcessingOutcome.CANCELLED, "interrupted"),
+                                            (ProcessingOutcome.FAILURE, "error")])
+async def test_turn_end_maps_the_processing_outcome(live, outcome, reason):
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    await adapter.on_processing_complete(event, outcome)
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": reason}
+    assert (await adapter.send(CHAT_ID, "after the end")).success is False
+
+
+async def test_untracked_events_send_no_turn_end(live):
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    await server.next_frame()
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert server.frames.empty()
+
+
+async def test_logs_never_carry_chat_text_or_the_channel_prompt(live, caplog):
+    caplog.set_level(logging.DEBUG)
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    await adapter.send(CHAT_ID, "Secret reply text", reply_to=MESSAGE_ID)
+    await server.next_frame()
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    await server.next_frame()
+    for secret in (TOKEN, "Hello captain", "Secret reply text", "character data"):
+        assert secret not in caplog.text
