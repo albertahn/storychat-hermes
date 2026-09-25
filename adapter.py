@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import random
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
@@ -17,6 +18,7 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidSta
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 
 from . import lifecycle, protocol, toolset_policy
 from . import settings as settings_mod
@@ -37,6 +39,15 @@ LOCK_SCOPE = "storychat-hermes-token"
 # Spec §9.3: logged exactly, with the real id, when STORYCHAT_ALLOWED_USERS does not name the owner.
 NOT_ALLOWED_MSG = "STORYCHAT_ALLOWED_USERS must contain your StoryChat userId {user_id} — copy it from storychat.app/chat/hermes"
 _opt_in_warned = False
+
+
+@dataclass(frozen=True)
+class _Turn:
+    turn_id: str
+    chat_id: str
+    message_id: str
+    user_name: str
+    chat_name: str
 
 
 class _ConnectFailed(Exception):
@@ -66,6 +77,7 @@ class StoryChatAdapter(BasePlatformAdapter):
         self._user_id = ""
         self._toolset_override: List[str] = list(toolset_policy.CHAT_ONLY_SENTINEL)
         self._effective_toolsets: List[str] = []
+        self._turns: Dict[str, _Turn] = {}  # chat_id -> running turn
         self._sleep = asyncio.sleep  # tests replace these two
         self._rng = random.Random()
 
@@ -259,6 +271,7 @@ class StoryChatAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug("[%s] closing the websocket failed during disconnect", self.name,
                             exc_info=True)
+        self._turns = {}
 
     async def _send_frame(self, frame: str) -> bool:
         ws = self._ws
@@ -285,7 +298,41 @@ class StoryChatAdapter(BasePlatformAdapter):
         except protocol.ProtocolError as exc:
             logger.warning("[%s] dropped invalid frame: %s", self.name, exc)
             return
-        logger.debug("[%s] no handler for %s frames", self.name, frame["type"])
+        if frame["type"] == "message":
+            await self._on_message(frame)
+
+    async def _on_message(self, frame: Dict[str, Any]) -> None:
+        turn_id, chat_id = frame["turnId"], frame["chatId"]
+        running = self._turns.get(chat_id)
+        if frame["userId"].lower() != self._user_id.lower() or running is not None:
+            logger.warning("[%s] refused turn %s (wrong user or a turn is already running)",
+                           self.name, turn_id)
+            await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
+            return
+        # R-T12: config.yaml is re-read every turn (gateway/run_turn.py _load_gateway_config), so a
+        # config edit after startup could otherwise bypass the connect-time chat-only self-check.
+        try:
+            effective = toolset_policy.effective_toolsets(self._toolset_override)
+        except Exception:
+            logger.debug("[%s] toolset recheck failed", self.name, exc_info=True)
+            effective = None
+        chat_only = toolset_policy.is_chat_only(self._toolset_override)
+        if (effective is None or (chat_only and toolset_policy.leaked_toolsets(effective))
+                or (not chat_only and "clarify" in effective)):
+            logger.error("[%s] refused turn %s: the StoryChat toolsets changed since startup; "
+                         "fix config.yaml and restart the gateway", self.name, turn_id)
+            await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
+            return
+        source = self.build_source(chat_id=chat_id, chat_name=frame["chatName"], chat_type="dm",
+                                   user_id=self._user_id, user_name=frame["userName"])
+        event = MessageEvent(text=frame["text"], message_type=MessageType.TEXT, source=source,
+                             message_id=frame["messageId"],
+                             channel_prompt=frame["channelPrompt"] or None,
+                             allow_gateway_control=False)
+        self._turns[chat_id] = _Turn(turn_id, chat_id, frame["messageId"], frame["userName"],
+                                     frame["chatName"])
+        logger.info("[%s] turn %s started", self.name, turn_id)
+        await self.handle_message(event)
 
     # ── outbound: send / edit / turn_end ────────────────────────────────────
 
