@@ -86,7 +86,10 @@ opted into with `STORYCHAT_TOOLSETS` in `~/.hermes/.env` (see "Tools, approvals 
 below), not by editing this list. `hermes config migrate` (and
 `hermes update` when it migrates your config) reports
 `platform 'storychat' references unknown toolset 'no_mcp'` and that storychat has no valid
-toolsets; that is expected, so leave the line as it is.
+toolsets. If storychat is your only `platform_toolsets` entry, it also reports
+`` platform_toolsets resolves to zero valid toolsets — the agent will have no tools. Run `hermes tools` to reconfigure. ``
+Your other platforms keep their tools. All of this is expected: leave the line as it is and do not
+run `hermes tools` to fix it.
 
 ### 5. Restart the gateway
 

@@ -108,18 +108,32 @@ def test_the_config_block_alone_lets_a_default_on_plugin_toolset_through(monkeyp
             "list those under `known_plugin_toolsets.storychat`") in text
 
 
-def test_the_config_check_calls_no_mcp_unknown_as_the_readme_says(tmp_path):
+def test_the_config_check_warns_as_the_readme_says(tmp_path):
     # hermes_cli/config.py _warn_invalid_platform_toolsets, run by `hermes config migrate` and by
     # `hermes update` when it migrates the config.
+    import hermes_cli.tools_config as tools_config
     from hermes_cli.toolset_scope import toolset_allowed_for_platform
     from hermes_cli.toolset_validation import validate_platform_toolsets
     from toolsets import validate_toolset
     config = load_config_block_as_the_gateway_does(tmp_path)
-    warnings = validate_platform_toolsets(config["platform_toolsets"], validate_toolset,
+
+    def check(platform_toolsets):
+        return validate_platform_toolsets(platform_toolsets, validate_toolset,
                                           toolset_allowed_for_platform)
+
+    warnings = check(config["platform_toolsets"])
     unknown = "platform 'storychat' references unknown toolset 'no_mcp'"
     assert any(w.startswith(unknown) for w in warnings)
     assert f"`{unknown}`" in README
+    # With storychat as the only entry Hermes also says the agent has no tools at all, which is
+    # wrong for platforms without an entry (the CLI keeps its defaults); a second entry silences it.
+    zero = "platform_toolsets resolves to zero valid toolsets"
+    (zero_warning,) = [w for w in warnings if w.startswith(zero)]
+    assert "terminal" in tools_config._get_platform_tools(config, "cli")
+    assert not [w for w in check({**config["platform_toolsets"], "cli": ["web"]}) if w.startswith(zero)]
+    text = " ".join(README.split())
+    assert f"`` {zero_warning} ``" in text
+    assert "do not run `hermes tools` to fix it" in text
 
 
 @pytest.mark.asyncio
