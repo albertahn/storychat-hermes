@@ -131,15 +131,17 @@ async def test_stop_interrupts_the_running_turn(live):
 HOST_TOOLSETS = {"terminal", "file", "code_execution", "browser", "computer_use", "delegation"}
 
 
-def runner_toolsets(adapter, *, with_adapter: bool = True) -> list:
+def runner_toolsets(adapter, *, with_adapter: bool = True, config: dict | None = None) -> list:
     """What Hermes' own runner enables for a storychat turn (gateway/run_turn.py
-    _resolve_enabled_toolsets_for_source), called the way _resolve_turn_toolsets calls it."""
+    _resolve_enabled_toolsets_for_source), called the way _resolve_turn_toolsets calls it, with the
+    sandbox config.yaml unless ``config`` is given."""
     from gateway.run import GatewayRunner, _load_gateway_config, _platform_config_key
     source = adapter.build_source(chat_id=CHAT_ID, chat_name="Captain Rook", chat_type="dm",
                                   user_id=USER_ID, user_name="Mina")
     runner = SimpleNamespace(_delivery_adapter_for=lambda s: adapter if with_adapter else None)
     return GatewayRunner._resolve_enabled_toolsets_for_source(
-        runner, _load_gateway_config(), source, _platform_config_key(source.platform))
+        runner, _load_gateway_config() if config is None else config, source,
+        _platform_config_key(source.platform))
 
 
 async def connected_adapter(monkeypatch, server):

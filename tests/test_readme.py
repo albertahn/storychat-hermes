@@ -141,9 +141,10 @@ def test_the_config_check_warns_as_the_readme_says(tmp_path):
 async def test_the_plugin_override_replaces_the_config_block_list(monkeypatch, storychat_env, tmp_path,
                                                                   toolsets, effective):
     from gateway.run import _load_gateway_config
+    from test_hermes_pipeline import runner_toolsets
 
     from storychat_hermes import toolset_policy
-    load_config_block_as_the_gateway_does(tmp_path)
+    config = load_config_block_as_the_gateway_does(tmp_path)
     monkeypatch.setattr(toolset_policy, "load_gateway_config",
                         lambda: _load_gateway_config(tmp_path / "config.yaml"))
     monkeypatch.setenv("STORYCHAT_TOOLSETS", toolsets)
@@ -151,8 +152,13 @@ async def test_the_plugin_override_replaces_the_config_block_list(monkeypatch, s
         monkeypatch.setenv("STORYCHAT_URL", server.url)
         adapter = make_adapter()
         assert await adapter.connect() is True
-        await adapter.disconnect()
+        try:
+            # Hermes' own runner, not the plugin's copy of its logic, must replace the block's list.
+            enabled = runner_toolsets(adapter, config=config)
+        finally:
+            await adapter.disconnect()
     assert server.hellos[0]["effectiveToolsets"] == effective
+    assert enabled == effective
 
 
 def test_mentions_the_session_age_setting():
