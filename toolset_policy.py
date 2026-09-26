@@ -101,6 +101,19 @@ def leaked_toolsets(effective: Iterable[str]) -> List[str]:
     return sorted(set(effective) - CHAT_ONLY_TOLERATED)
 
 
+def external_memory_provider(config: Optional[dict] = None) -> Optional[str]:
+    """The external memory provider Hermes runs on every turn, or None for the built-in store only.
+    Whatever the toolsets, the provider prefetches recall into each turn and writes each turn back
+    (agent/memory_manager.py prefetch_all / sync_all). Resolved like agent/agent_init.py
+    _init_memory: ``memory.provider``, where "", default, builtin, built-in and none mean the
+    built-in store (agent/memory_provider.py is_core_memory_provider)."""
+    from agent.memory_provider import is_core_memory_provider
+    from tools.memory_tool import get_builtin_memory_config
+    cfg = load_gateway_config() if config is None else config
+    name = get_builtin_memory_config(cfg).get("provider", "")
+    return None if is_core_memory_provider(name) else str(name).strip()
+
+
 def unsafe_display_settings(config: Optional[dict] = None) -> List[str]:
     """Gateway display surfaces that would still stream to StoryChat as the character's reply
     (spec §9.2): unlike ``long_running_notifications`` (always sent with ``_interim_send`` —

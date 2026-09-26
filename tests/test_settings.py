@@ -62,6 +62,14 @@ def test_a_comment_that_dotenv_read_as_the_value_counts_as_empty(monkeypatch):
     assert (cfg.toolsets_raw, cfg.approval_pin) == ("", "")
 
 
+@pytest.mark.parametrize("value,allowed", [("1", True), ("", False), ("0", False), ("yes", False),
+                                           ("# set to 1 to allow", False)])
+def test_the_memory_provider_opt_in_needs_exactly_1(monkeypatch, value, allowed):
+    monkeypatch.setenv("STORYCHAT_HERMES_TOKEN", TOKEN)
+    monkeypatch.setenv("STORYCHAT_ALLOW_MEMORY_PROVIDER", value)
+    assert settings.load_settings().allow_memory_provider is allowed
+
+
 def test_allowed_users_are_split_on_commas_and_trimmed(monkeypatch):
     monkeypatch.setenv("STORYCHAT_HERMES_TOKEN", TOKEN)
     monkeypatch.setenv("STORYCHAT_ALLOWED_USERS", f" {USER_ID} ,, 65C0000000000000000000B2 ")

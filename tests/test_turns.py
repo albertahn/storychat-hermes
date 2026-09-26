@@ -9,7 +9,7 @@ import pytest_asyncio
 from gateway.config import Platform
 from gateway.platforms.event import ProcessingOutcome
 from support import (CHAT_ID, MESSAGE_ID, TOKEN, TURN_ID, USER_ID, FakeStoryChat, make_adapter,
-                     message_frame, wait_until)
+                     message_frame, wait_until, with_memory_provider)
 
 pytestmark = pytest.mark.asyncio
 
@@ -135,6 +135,16 @@ async def test_opt_in_turn_is_refused_when_hermes_approvals_turned_off(monkeypat
             assert f"refused turn {TURN_ID}: Hermes approvals are off" in caplog.text
         finally:
             await adapter.disconnect()
+
+
+async def test_turn_is_refused_when_a_memory_provider_was_turned_on(monkeypatch, live, caplog):
+    adapter, server = live
+    with_memory_provider(monkeypatch, "honcho")
+    await server.push("message", **message_frame())
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "error"}
+    assert adapter.handle_message.await_count == 0
+    assert f"refused turn {TURN_ID}: an external memory provider is on" in caplog.text
 
 
 async def test_turn_is_refused_when_the_recheck_cannot_run(monkeypatch, live, caplog):

@@ -137,6 +137,13 @@ Hermes history. In Hermes v0.21.5 this key is read from `~/.hermes/gateway.json`
   / `HERMES_YOLO_MODE`), and refuses turns if they are turned off later (including `/yolo` for that
   chat's session), because every dangerous command would then run without your PIN. `manual` (the
   default) and `smart` are fine.
+- **External memory providers.** If `memory.provider` in `config.yaml` names an external provider
+  (for example `honcho`), Hermes sends every StoryChat turn to it, where your other sessions can
+  recall it, whatever the toolsets: chat-only mode cannot stop that, and text a character card can
+  steer would end up in the memory your tool-enabled sessions read. So the plugin refuses to
+  connect (and refuses turns if you add one later) unless you set `STORYCHAT_ALLOW_MEMORY_PROVIDER=1`
+  in `~/.hermes/.env`. With it set, the plugin logs a warning once and connects. The built-in
+  `MEMORY.md` / `USER.md` store is always fine.
 - **Chat text never controls the gateway.** Messages from StoryChat can't run `/approve`, `/yolo`,
   `/new` or any other command, and can't answer an approval.
 
@@ -155,10 +162,12 @@ Hermes history. In Hermes v0.21.5 this key is read from `~/.hermes/gateway.json`
 | `StoryChat accepts at most 100 toolsets with names of up to 128 characters, but STORYCHAT_TOOLSETS resolves to …` | `STORYCHAT_TOOLSETS` names so many MCP servers, or an MCP server with such a long name, that StoryChat's relay would refuse the connection. | Name fewer toolsets or MCP servers in `.env`, or give the MCP server a shorter name in `config.yaml`, then restart the gateway. |
 | `STORYCHAT_TOOLSETS brings in the clarify toolset (through a bundle such as hermes-cli, coding or all), and StoryChat cannot answer clarify questions, so turns would hang.` | A bundle in `STORYCHAT_TOOLSETS` brought `clarify` back in. | Name toolsets one by one (for example `web,file,terminal`) instead of a bundle, or add `clarify` to `agent.disabled_toolsets` in `config.yaml`, then restart the gateway. |
 | `STORYCHAT_TOOLSETS gives StoryChat tools, but Hermes approvals are off …` | `approvals.mode` is `off` in `config.yaml`, or the gateway runs with `--yolo` / `HERMES_YOLO_MODE`, so dangerous commands would run without your PIN. | Set `approvals.mode` to `manual` or `smart` (or stop using `--yolo`), or leave `STORYCHAT_TOOLSETS` empty for chat only, then restart the gateway. |
+| `memory.provider is …: Hermes sends every StoryChat turn, including text a character card can steer, to that memory provider, …` | `memory.provider` in `config.yaml` names an external memory provider, and `STORYCHAT_ALLOW_MEMORY_PROVIDER=1` is not set. | Set `memory.provider` back to the built-in store (remove it, or set it to `builtin`), or add `STORYCHAT_ALLOW_MEMORY_PROVIDER=1` to `~/.hermes/.env` if you accept that StoryChat turns go to that provider (see "External memory providers" above), then run `hermes gateway restart`. |
 | `these StoryChat display settings are still on: …` | `tool_progress`, `interim_assistant_messages` or `thinking_progress` under `display.platforms.storychat` would leak progress text into StoryChat as the character's reply. | Set them off under `display.platforms.storychat` in `config.yaml` (see "Progress messages stay off" above), then restart the gateway. |
 | `refused turn …: the StoryChat toolsets changed since startup; fix config.yaml and restart the gateway` | `config.yaml` changed after the gateway started and now gives StoryChat toolsets it must not get, so the per-turn self-check refused this turn. | Fix `config.yaml` back to a safe configuration and run `hermes gateway restart`. |
 | `refused turn …: the StoryChat display settings changed since startup; fix config.yaml and restart the gateway` | `config.yaml` changed after the gateway started and turned a `display.platforms.storychat` progress setting back on. | Set it off again (see "Progress messages stay off" above) and run `hermes gateway restart`. |
 | `refused turn …: Hermes approvals are off (approvals.mode: off, --yolo or /yolo); fix config.yaml and restart the gateway` | With tools opted in, approvals were turned off after startup (`approvals.mode: off`, or `/yolo` in that chat's Hermes session). | Turn approvals back on and run `hermes gateway restart`. |
+| `refused turn …: an external memory provider is on (memory.provider) without STORYCHAT_ALLOW_MEMORY_PROVIDER=1; fix config.yaml and restart the gateway` | `memory.provider` was set to an external provider after the gateway started. | Remove it again, or set `STORYCHAT_ALLOW_MEMORY_PROVIDER=1` in `~/.hermes/.env`, then run `hermes gateway restart`. |
 | `refused turn …: could not verify the StoryChat toolsets/display settings; fix config.yaml and restart the gateway` | The per-turn self-check could not read the settings; the error line just before it names the exception (often a YAML mistake in `config.yaml`). | Fix `config.yaml` and run `hermes gateway restart`. |
 | `refused turn …: Hermes is still finishing the previous turn` | A message arrived while Hermes was still wrapping up the previous reply in that chat (or unwinding a stopped one), so StoryChat showed an error for it. | Nothing is wrong: wait a moment and send the message again. |
 | `StoryChat pairing token already in use …` | Another Hermes gateway on this computer (another profile, or the same one started twice) is already connected with this token. | Stop the other gateway (the message names it), then run `hermes gateway restart`. |
@@ -172,7 +181,9 @@ the connection dropped is stopped.
 
 Chats pass through StoryChat's servers, as all StoryChat chats do. Hermes also keeps its own
 transcript on your computer. The plugin never logs your token, your PIN, message text or the
-character card.
+character card. If you set `STORYCHAT_ALLOW_MEMORY_PROVIDER=1`, Hermes also sends your StoryChat
+turns to the external memory provider named in `memory.provider`, which may be a third-party
+service (see "External memory providers" above).
 
 ## Development
 

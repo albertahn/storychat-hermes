@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from support import CHAT_ID, TOKEN, FakeStoryChat, make_adapter, message_frame, wait_until
+from support import (CHAT_ID, TOKEN, FakeStoryChat, make_adapter, message_frame, wait_until,
+                     with_memory_provider)
 
 pytestmark = pytest.mark.asyncio
 
@@ -93,6 +94,51 @@ async def test_opt_in_warns_once_about_character_cards(monkeypatch, storychat_en
     # check_all_command_guards) and for those smart approvals pass.
     assert "every dangerous command" not in warnings[0]
     assert "command_allowlist" in warnings[0] and "smart" in warnings[0]
+
+
+@pytest.mark.parametrize("toolsets", ["", "web"])
+async def test_an_external_memory_provider_refuses_to_connect(monkeypatch, storychat_env, caplog,
+                                                              toolsets):
+    # Hermes' memory provider prefetches recall into every turn and writes every turn back,
+    # whatever the toolsets (agent/memory_manager.py prefetch_all / sync_all): chat-only mode
+    # cannot keep StoryChat text out of it.
+    with_memory_provider(monkeypatch, "honcho")
+    monkeypatch.setenv("STORYCHAT_TOOLSETS", toolsets)
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is False
+        assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == (
+            "storychat_memory_provider", False)
+        assert "honcho" in adapter.fatal_error_message
+        assert "STORYCHAT_ALLOW_MEMORY_PROVIDER=1" in adapter.fatal_error_message
+        assert server.requests == []
+
+
+async def test_an_allowed_memory_provider_connects_and_warns_once(monkeypatch, storychat_env, caplog):
+    with_memory_provider(monkeypatch, "honcho")
+    monkeypatch.setenv("STORYCHAT_ALLOW_MEMORY_PROVIDER", "1")
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        for _ in range(2):
+            adapter = make_adapter()
+            assert await adapter.connect() is True
+            await adapter.disconnect()
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING and "memory provider" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "honcho" in warnings[0] and "character card" in warnings[0]
+
+
+@pytest.mark.parametrize("provider", ["", "builtin", "Built-in", "none", None])
+async def test_the_built_in_memory_store_connects(monkeypatch, storychat_env, caplog, provider):
+    with_memory_provider(monkeypatch, provider)
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        await adapter.disconnect()
+    assert "memory provider" not in caplog.text
 
 
 def hermes_approvals(monkeypatch, mode=None, yolo=False):

@@ -32,6 +32,8 @@ class StoryChatSettings:
     toolsets_raw: str
     is_local_dev: bool  # ws://localhost with STORYCHAT_DEV_INSECURE_LOCALHOST=1
     allowed_users: Tuple[str, ...]  # STORYCHAT_ALLOWED_USERS entries, trimmed, spelled as written
+    # STORYCHAT_ALLOW_MEMORY_PROVIDER=1: accept Hermes' external memory provider (memory.provider)
+    allow_memory_provider: bool = False
 
 
 def _secret(name: str) -> str:
@@ -72,4 +74,5 @@ def load_settings() -> StoryChatSettings:
     allowed_users = tuple(u.strip() for u in _secret("STORYCHAT_ALLOWED_USERS").split(",") if u.strip())
     return StoryChatSettings(token=token, url=url, approval_pin=pin,
                              toolsets_raw=_secret("STORYCHAT_TOOLSETS"), is_local_dev=is_local_dev,
-                             allowed_users=allowed_users)
+                             allowed_users=allowed_users,
+                             allow_memory_provider=_secret("STORYCHAT_ALLOW_MEMORY_PROVIDER") == "1")

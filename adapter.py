@@ -52,7 +52,15 @@ TOOLSETS_CHANGED = "the StoryChat toolsets changed since startup"
 DISPLAY_CHANGED = "the StoryChat display settings changed since startup"
 RECHECK_UNVERIFIED = "could not verify the StoryChat toolsets/display settings"
 APPROVALS_OFF = "Hermes approvals are off (approvals.mode: off, --yolo or /yolo)"
+MEMORY_PROVIDER_ON = ("an external memory provider is on (memory.provider) without "
+                      "STORYCHAT_ALLOW_MEMORY_PROVIDER=1")
+MEMORY_PROVIDER_MSG = (
+    "memory.provider is {provider}: Hermes sends every StoryChat turn, including text a character "
+    "card can steer, to that memory provider, and your other Hermes sessions can recall it. Set "
+    "memory.provider back to the built-in store in config.yaml, or set "
+    "STORYCHAT_ALLOW_MEMORY_PROVIDER=1 in .env to accept this, then restart the gateway.")
 _opt_in_warned = False
+_memory_provider_warned = False
 
 
 @dataclass(frozen=True)
@@ -161,7 +169,9 @@ class StoryChatAdapter(BasePlatformAdapter):
         self._spawn(self._notify_fatal_error())
 
     def _check_toolsets(self, cfg: settings_mod.StoryChatSettings) -> bool:
-        """Startup self-check (spec §9.3): refuse to connect when chat-only mode would leak tools."""
+        """Startup self-check (spec §9.3): refuse to connect when StoryChat turns would get tools
+        they must not, run commands with approvals off, stream progress as the reply, or feed an
+        external memory provider."""
         global _opt_in_warned
         try:
             override = toolset_policy.toolset_override(cfg.toolsets_raw)
@@ -229,8 +239,27 @@ class StoryChatAdapter(BasePlatformAdapter):
                 "reply. Set them off under display.platforms.storychat in config.yaml "
                 "(tool_progress: off, interim_assistant_messages: false, thinking_progress: "
                 "false), then restart the gateway.", retryable=False)
+        provider = toolset_policy.external_memory_provider()
+        if self._memory_provider_blocked(provider, cfg.allow_memory_provider):
+            return self._fail("storychat_memory_provider",
+                              MEMORY_PROVIDER_MSG.format(provider=provider), retryable=False)
         self._toolset_override, self._effective_toolsets = override, effective
         return True
+
+    def _memory_provider_blocked(self, provider: Optional[str], allowed: bool) -> bool:
+        """Chat-only mode cannot keep StoryChat text out of Hermes' external memory provider, so
+        it is refused unless STORYCHAT_ALLOW_MEMORY_PROVIDER=1; accepted, it is logged once."""
+        global _memory_provider_warned
+        if provider is None:
+            return False
+        if not allowed:
+            return True
+        if not _memory_provider_warned:
+            _memory_provider_warned = True
+            logger.warning("[%s] STORYCHAT_ALLOW_MEMORY_PROVIDER=1: StoryChat turns, including text "
+                           "a character card can steer, are written to the %s memory provider.",
+                           self.name, provider)
+        return False
 
     async def _open_session(self) -> None:
         """Open the socket, send hello, wait for welcome; raise _ConnectFailed with a verdict for
@@ -505,6 +534,7 @@ class StoryChatAdapter(BasePlatformAdapter):
             effective = toolset_policy.effective_toolsets(self._toolset_override, cfg)
             unsafe = toolset_policy.unsafe_display_settings(cfg)
             approvals_off = not chat_only and _approvals_bypassed(session_key)
+            memory_provider = toolset_policy.external_memory_provider(cfg)
         except Exception as exc:
             logger.error("[%s] toolset recheck for turn %s failed: %s", self.name, turn_id,
                          type(exc).__name__)
@@ -515,6 +545,8 @@ class StoryChatAdapter(BasePlatformAdapter):
             return TOOLSETS_CHANGED
         if approvals_off:
             return APPROVALS_OFF
+        if self._memory_provider_blocked(memory_provider, self._settings.allow_memory_provider):
+            return MEMORY_PROVIDER_ON
         return DISPLAY_CHANGED if unsafe else None
 
     def _hermes_session_busy(self, event: MessageEvent) -> bool:

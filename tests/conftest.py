@@ -34,7 +34,8 @@ _package.__path__ = [str(ROOT)]
 sys.modules["storychat_hermes"] = _package
 
 _STORYCHAT_ENV = ("STORYCHAT_HERMES_TOKEN", "STORYCHAT_ALLOWED_USERS", "STORYCHAT_APPROVAL_PIN",
-                  "STORYCHAT_TOOLSETS", "STORYCHAT_URL", "STORYCHAT_DEV_INSECURE_LOCALHOST")
+                  "STORYCHAT_TOOLSETS", "STORYCHAT_URL", "STORYCHAT_DEV_INSECURE_LOCALHOST",
+                  "STORYCHAT_ALLOW_MEMORY_PROVIDER")
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +45,7 @@ def _isolate(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     from storychat_hermes import adapter
     monkeypatch.setattr(adapter, "_opt_in_warned", False)
+    monkeypatch.setattr(adapter, "_memory_provider_warned", False, raising=False)
     from storychat_hermes import approvals
     monkeypatch.setattr(approvals, "PIN_GUARD", approvals.PinGuard())
 

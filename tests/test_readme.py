@@ -149,7 +149,7 @@ def test_troubleshooting_carries_the_refusals_added_after_the_plan():
     _, _, per_turn_suffix = per_turn_fmt.partition("refused turn %s")
     assert per_turn_suffix
     for reason in (adapter.TOOLSETS_CHANGED, adapter.DISPLAY_CHANGED, adapter.RECHECK_UNVERIFIED,
-                   adapter.APPROVALS_OFF):
+                   adapter.APPROVALS_OFF, adapter.MEMORY_PROVIDER_ON):
         assert f"refused turn …{per_turn_suffix % reason}" in README
 
 
@@ -217,6 +217,15 @@ async def test_troubleshooting_covers_hermes_approvals_off(monkeypatch, storycha
     assert off and f"| `{prefix}{off.rstrip()} …` |" in README
     text = " ".join(README.split())
     assert "`command_allowlist`" in text and "`approvals.mode: smart`" in text
+
+
+def test_troubleshooting_covers_an_external_memory_provider():
+    from storychat_hermes import adapter
+    message = adapter.MEMORY_PROVIDER_MSG.format(provider="…")
+    fixed, _, _ = message.partition(" and your other")
+    assert f"| `{fixed} …` |" in README
+    text = " ".join(README.split())
+    assert "`STORYCHAT_ALLOW_MEMORY_PROVIDER=1`" in text and "`memory.provider`" in text
 
 
 def test_troubleshooting_covers_proxy_errors_and_busy_turns():

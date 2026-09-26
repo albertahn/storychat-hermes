@@ -39,6 +39,14 @@ def register_storychat_platform() -> None:
             check_fn=lambda: True))
 
 
+def with_memory_provider(monkeypatch, provider) -> None:
+    """The sandbox config.yaml plus memory.provider, as Hermes' gateway would load it."""
+    from storychat_hermes import toolset_policy
+    real = toolset_policy.load_gateway_config
+    monkeypatch.setattr(toolset_policy, "load_gateway_config",
+                        lambda: {**real(), "memory": {"provider": provider}})
+
+
 def message_frame(**overrides) -> dict:
     frame = {"turnId": TURN_ID, "chatId": CHAT_ID, "messageId": MESSAGE_ID, "userId": USER_ID,
              "userName": "Mina", "chatName": "Captain Rook", "text": "Hello captain",
