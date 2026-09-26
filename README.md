@@ -79,9 +79,11 @@ platform_toolsets:
                              # opt into tools with STORYCHAT_TOOLSETS in ~/.hermes/.env, not here.
 ```
 
-The `platform_toolsets` line keeps StoryChat chat-only even if Hermes ever resolves its toolsets
-without the plugin. Tools are opted into with `STORYCHAT_TOOLSETS` in `~/.hermes/.env` (see "Tools,
-approvals and the PIN" below), not by editing this list. `hermes config migrate` (and
+The `platform_toolsets` line keeps core toolsets and MCP servers off StoryChat even if Hermes ever
+resolves its toolsets without the plugin. It does not cover plugin toolsets that are on by default:
+list those under `known_plugin_toolsets.storychat` (see "Startup self-check" below). Tools are
+opted into with `STORYCHAT_TOOLSETS` in `~/.hermes/.env` (see "Tools, approvals and the PIN"
+below), not by editing this list. `hermes config migrate` (and
 `hermes update` when it migrates your config) reports
 `platform 'storychat' references unknown toolset 'no_mcp'` and that storychat has no valid
 toolsets; that is expected, so leave the line as it is.

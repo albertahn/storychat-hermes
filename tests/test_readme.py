@@ -72,7 +72,8 @@ def test_the_config_block_parses_as_the_gateway_loads_it(tmp_path):
 
 @pytest.mark.parametrize("extra", [{}, {"mcp_servers": {"github": {"command": "npx",
                                                                   "args": ["github-mcp"]}}}])
-def test_the_config_block_alone_keeps_storychat_chat_only(monkeypatch, tmp_path, caplog, extra):
+def test_the_config_block_alone_keeps_core_toolsets_and_mcp_off_storychat(monkeypatch, tmp_path, caplog,
+                                                                         extra):
     # Resolved with no adapter override, as Hermes would if it ever skipped toolsets_for_source.
     import hermes_cli.tools_config as tools_config
 
@@ -85,6 +86,26 @@ def test_the_config_block_alone_keeps_storychat_chat_only(monkeypatch, tmp_path,
     # No new warning: only the no_mcp line the plugin's own override already makes Hermes log.
     (line,) = [r.getMessage() for r in caplog.records if r.name == tools_config.logger.name]
     assert "no_mcp" in line and line in README
+
+
+def test_the_config_block_alone_lets_a_default_on_plugin_toolset_through(monkeypatch, tmp_path):
+    # hermes_cli/tools_config.py _enabled_plugin_toolsets turns on every plugin toolset that is not
+    # default-off or listed under known_plugin_toolsets.<platform>, whatever the saved list says.
+    import hermes_cli.tools_config as tools_config
+
+    from storychat_hermes import toolset_policy
+    register_storychat_platform()
+    monkeypatch.setattr(tools_config, "_get_plugin_toolset_keys", lambda: {"home_automation"})
+    config = load_config_block_as_the_gateway_does(tmp_path)
+    assert toolset_policy.leaked_toolsets(
+        tools_config._get_platform_tools(config, "storychat")) == ["home_automation"]
+    known = {**config, "known_plugin_toolsets": {"storychat": ["home_automation"]}}
+    assert toolset_policy.leaked_toolsets(tools_config._get_platform_tools(known, "storychat")) == []
+    text = " ".join(README.split())
+    assert "keeps StoryChat chat-only even if" not in text
+    assert ("keeps core toolsets and MCP servers off StoryChat even if Hermes ever resolves its "
+            "toolsets without the plugin. It does not cover plugin toolsets that are on by default: "
+            "list those under `known_plugin_toolsets.storychat`") in text
 
 
 def test_the_config_check_calls_no_mcp_unknown_as_the_readme_says(tmp_path):
