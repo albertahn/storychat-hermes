@@ -129,7 +129,14 @@ Hermes history. In Hermes v0.21.5 this key is read from `~/.hermes/gateway.json`
   servers to your agent without being stored or logged there, so use a PIN you use nowhere else.
   After 5 wrong PINs in a row, remote approvals stay locked until you restart the
   gateway. Without a PIN (or with one shorter than 6 digits) remote approvals are refused. If nobody
-  answers, Hermes denies the command after `approvals.timeout` (default 300s).
+  answers, Hermes denies the command after `approvals.timeout` (default 300s). Hermes shows no card
+  for a command that matches your `command_allowlist` (for example one you approved with Always) or
+  that `approvals.mode: smart` judges safe; those run without the PIN.
+- **Approvals must stay on.** With `STORYCHAT_TOOLSETS` set, the plugin refuses to connect while
+  Hermes approvals are off (`approvals.mode: off` in `config.yaml`, or the gateway runs with `--yolo`
+  / `HERMES_YOLO_MODE`), and refuses turns if they are turned off later (including `/yolo` for that
+  chat's session), because every dangerous command would then run without your PIN. `manual` (the
+  default) and `smart` are fine.
 - **Chat text never controls the gateway.** Messages from StoryChat can't run `/approve`, `/yolo`,
   `/new` or any other command, and can't answer an approval.
 
@@ -147,9 +154,11 @@ Hermes history. In Hermes v0.21.5 this key is read from `~/.hermes/gateway.json`
 | `STORYCHAT_TOOLSETS names unknown toolset(s): …; leave STORYCHAT_TOOLSETS empty for chat only` | `STORYCHAT_TOOLSETS` named something Hermes doesn't recognize as a toolset key or an enabled MCP server. | Fix the toolset names in `.env` (or leave `STORYCHAT_TOOLSETS` empty for chat only), then restart the gateway. |
 | `StoryChat accepts at most 100 toolsets with names of up to 128 characters, but STORYCHAT_TOOLSETS resolves to …` | `STORYCHAT_TOOLSETS` names so many MCP servers, or an MCP server with such a long name, that StoryChat's relay would refuse the connection. | Name fewer toolsets or MCP servers in `.env`, or give the MCP server a shorter name in `config.yaml`, then restart the gateway. |
 | `STORYCHAT_TOOLSETS brings in the clarify toolset (through a bundle such as hermes-cli, coding or all), and StoryChat cannot answer clarify questions, so turns would hang.` | A bundle in `STORYCHAT_TOOLSETS` brought `clarify` back in. | Name toolsets one by one (for example `web,file,terminal`) instead of a bundle, or add `clarify` to `agent.disabled_toolsets` in `config.yaml`, then restart the gateway. |
+| `STORYCHAT_TOOLSETS gives StoryChat tools, but Hermes approvals are off …` | `approvals.mode` is `off` in `config.yaml`, or the gateway runs with `--yolo` / `HERMES_YOLO_MODE`, so dangerous commands would run without your PIN. | Set `approvals.mode` to `manual` or `smart` (or stop using `--yolo`), or leave `STORYCHAT_TOOLSETS` empty for chat only, then restart the gateway. |
 | `these StoryChat display settings are still on: …` | `tool_progress`, `interim_assistant_messages` or `thinking_progress` under `display.platforms.storychat` would leak progress text into StoryChat as the character's reply. | Set them off under `display.platforms.storychat` in `config.yaml` (see "Progress messages stay off" above), then restart the gateway. |
 | `refused turn …: the StoryChat toolsets changed since startup; fix config.yaml and restart the gateway` | `config.yaml` changed after the gateway started and now gives StoryChat toolsets it must not get, so the per-turn self-check refused this turn. | Fix `config.yaml` back to a safe configuration and run `hermes gateway restart`. |
 | `refused turn …: the StoryChat display settings changed since startup; fix config.yaml and restart the gateway` | `config.yaml` changed after the gateway started and turned a `display.platforms.storychat` progress setting back on. | Set it off again (see "Progress messages stay off" above) and run `hermes gateway restart`. |
+| `refused turn …: Hermes approvals are off (approvals.mode: off, --yolo or /yolo); fix config.yaml and restart the gateway` | With tools opted in, approvals were turned off after startup (`approvals.mode: off`, or `/yolo` in that chat's Hermes session). | Turn approvals back on and run `hermes gateway restart`. |
 | `refused turn …: could not verify the StoryChat toolsets/display settings; fix config.yaml and restart the gateway` | The per-turn self-check could not read the settings; the error line just before it names the exception (often a YAML mistake in `config.yaml`). | Fix `config.yaml` and run `hermes gateway restart`. |
 | `refused turn …: Hermes is still finishing the previous turn` | A message arrived while Hermes was still wrapping up the previous reply in that chat (or unwinding a stopped one), so StoryChat showed an error for it. | Nothing is wrong: wait a moment and send the message again. |
 | `StoryChat pairing token already in use …` | Another Hermes gateway on this computer (another profile, or the same one started twice) is already connected with this token. | Stop the other gateway (the message names it), then run `hermes gateway restart`. |

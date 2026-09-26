@@ -118,6 +118,25 @@ async def test_turn_is_refused_when_display_would_leak_progress_as_a_reply(monke
     assert f"refused turn {TURN_ID}: the StoryChat display settings changed since startup" in caplog.text
 
 
+async def test_opt_in_turn_is_refused_when_hermes_approvals_turned_off(monkeypatch, storychat_env,
+                                                                      caplog):
+    import tools.approval_context
+    monkeypatch.setenv("STORYCHAT_TOOLSETS", "terminal")
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        try:
+            monkeypatch.setattr(tools.approval_context, "_get_approval_config", lambda: {"mode": False})
+            await server.push("message", **message_frame())
+            assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                                 "chatId": CHAT_ID, "reason": "error"}
+            assert adapter.handle_message.await_count == 0
+            assert f"refused turn {TURN_ID}: Hermes approvals are off" in caplog.text
+        finally:
+            await adapter.disconnect()
+
+
 async def test_turn_is_refused_when_the_recheck_cannot_run(monkeypatch, live, caplog):
     adapter, server = live
     from storychat_hermes import toolset_policy

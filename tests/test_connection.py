@@ -87,8 +87,48 @@ async def test_opt_in_warns_once_about_character_cards(monkeypatch, storychat_en
             assert await adapter.connect() is True
             await adapter.disconnect()
         assert server.hellos[0]["effectiveToolsets"] == ["web"]
-    warnings = [r for r in caplog.records if "character cards" in r.getMessage()]
+    warnings = [r.getMessage() for r in caplog.records if "character cards" in r.getMessage()]
     assert len(warnings) == 1
+    # Hermes skips the card for commands on the permanent allowlist (tools/approval.py
+    # check_all_command_guards) and for those smart approvals pass.
+    assert "every dangerous command" not in warnings[0]
+    assert "command_allowlist" in warnings[0] and "smart" in warnings[0]
+
+
+def hermes_approvals(monkeypatch, mode=None, yolo=False):
+    """approvals.mode as config.yaml's YAML gives it to Hermes (a bare `off` parses as False)."""
+    import tools.approval
+    import tools.approval_context
+    monkeypatch.setattr(tools.approval_context, "_get_approval_config",
+                        lambda: {} if mode is None else {"mode": mode})
+    monkeypatch.setattr(tools.approval, "_YOLO_MODE_FROZEN", yolo)
+
+
+@pytest.mark.parametrize("mode,yolo", [(False, False), ("off", False), (None, True)])
+async def test_opt_in_refuses_to_connect_when_hermes_approvals_are_off(monkeypatch, storychat_env,
+                                                                      mode, yolo):
+    # approvals.mode: off or --yolo (HERMES_YOLO_MODE) makes Hermes run every dangerous command
+    # without asking, so the StoryChat PIN would guard nothing.
+    hermes_approvals(monkeypatch, mode, yolo)
+    monkeypatch.setenv("STORYCHAT_TOOLSETS", "terminal")
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is False
+        assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == (
+            "storychat_approvals_off", False)
+        assert server.requests == []
+
+
+@pytest.mark.parametrize("toolsets,mode", [("terminal", "smart"), ("terminal", "manual"), ("", False)])
+async def test_smart_approvals_or_chat_only_still_connect(monkeypatch, storychat_env, toolsets, mode):
+    hermes_approvals(monkeypatch, mode)
+    monkeypatch.setenv("STORYCHAT_TOOLSETS", toolsets)
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        await adapter.disconnect()
 
 
 @pytest.mark.parametrize("status,code", [(401, "storychat_token_rejected"),

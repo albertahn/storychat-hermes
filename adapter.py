@@ -51,6 +51,7 @@ PROXY_MSG = "proxy settings are invalid or need python-socks — check HTTPS_PRO
 TOOLSETS_CHANGED = "the StoryChat toolsets changed since startup"
 DISPLAY_CHANGED = "the StoryChat display settings changed since startup"
 RECHECK_UNVERIFIED = "could not verify the StoryChat toolsets/display settings"
+APPROVALS_OFF = "Hermes approvals are off (approvals.mode: off, --yolo or /yolo)"
 _opt_in_warned = False
 
 
@@ -63,6 +64,14 @@ class _Turn:
     chat_name: str
     stop_requested: bool = False
     failed: bool = False  # Hermes sent its failed-turn copy (notices.FAILURE) for this turn
+
+
+def _approvals_bypassed(session_key: str) -> bool:
+    """Whether Hermes runs dangerous commands without asking anyone: process --yolo
+    (HERMES_YOLO_MODE), /yolo for this session, or approvals.mode: off. tools/approval.py
+    check_all_command_guards approves on exactly these before any approval card is shown."""
+    from tools.approval import is_approval_bypass_active_for_session
+    return is_approval_bypass_active_for_session(session_key)
 
 
 class _ConnectFailed(Exception):
@@ -190,11 +199,21 @@ class StoryChatAdapter(BasePlatformAdapter):
                 "turns would hang. Name toolsets one by one (for example web,file,terminal) or "
                 "add clarify to agent.disabled_toolsets in config.yaml, then restart the gateway.",
                 retryable=False)
+        if not chat_only and _approvals_bypassed(""):
+            return self._fail(
+                "storychat_approvals_off",
+                "STORYCHAT_TOOLSETS gives StoryChat tools, but Hermes approvals are off "
+                "(approvals.mode: off in config.yaml, or the gateway runs with --yolo / "
+                "HERMES_YOLO_MODE), so dangerous commands would run without your PIN. Turn "
+                "approvals on (approvals.mode: manual or smart) or leave STORYCHAT_TOOLSETS empty "
+                "for chat only, then restart the gateway.", retryable=False)
         if not chat_only and not _opt_in_warned:
             _opt_in_warned = True
             logger.warning("[%s] STORYCHAT_TOOLSETS enables %s. Imported or cloned character "
-                           "cards can carry instructions; every dangerous command still needs "
-                           "your approval PIN.", self.name, ", ".join(effective) or "no toolsets")
+                           "cards can carry instructions; dangerous commands need approval from "
+                           "StoryChat with your PIN, unless they match your command_allowlist or "
+                           "smart approvals pass them.", self.name,
+                           ", ".join(effective) or "no toolsets")
         try:
             unsafe = toolset_policy.unsafe_display_settings()
         except Exception as exc:
@@ -423,18 +442,18 @@ class StoryChatAdapter(BasePlatformAdapter):
                            self.name, turn_id)
             await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
             return
-        problem = self._recheck_toolsets(turn_id)
-        if problem is not None:
-            logger.error("[%s] refused turn %s: %s; fix config.yaml and restart the gateway",
-                         self.name, turn_id, problem)
-            await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
-            return
         source = self.build_source(chat_id=chat_id, chat_name=frame["chatName"], chat_type="dm",
                                    user_id=self._user_id, user_name=frame["userName"])
         event = MessageEvent(text=frame["text"], message_type=MessageType.TEXT, source=source,
                              message_id=frame["messageId"],
                              channel_prompt=frame["channelPrompt"] or None,
                              allow_gateway_control=False)
+        problem = self._recheck_toolsets(turn_id, self._event_session_key(event))
+        if problem is not None:
+            logger.error("[%s] refused turn %s: %s; fix config.yaml and restart the gateway",
+                         self.name, turn_id, problem)
+            await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
+            return
         if self._hermes_session_busy(event):
             # A stopped turn still unwinding, or the gap between on_processing_complete and Hermes
             # releasing the session: Hermes would treat this message as a busy follow-up (busy ack
@@ -475,24 +494,27 @@ class StoryChatAdapter(BasePlatformAdapter):
         logger.warning("[%s] turn %s ended: error (Hermes did not accept it)", self.name, turn.turn_id)
         await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, "error"))
 
-    def _recheck_toolsets(self, turn_id: str) -> Optional[str]:
+    def _recheck_toolsets(self, turn_id: str, session_key: str) -> Optional[str]:
         """R-T12: config.yaml is re-read every turn (gateway/run_turn.py _load_gateway_config), so a
         config edit after startup could otherwise bypass the connect-time chat-only and display
         self-checks. Loaded once so both checks see the same snapshot. Returns why the turn must be
         refused, or None."""
+        chat_only = toolset_policy.is_chat_only(self._toolset_override)
         try:
             cfg = toolset_policy.load_gateway_config()
             effective = toolset_policy.effective_toolsets(self._toolset_override, cfg)
             unsafe = toolset_policy.unsafe_display_settings(cfg)
+            approvals_off = not chat_only and _approvals_bypassed(session_key)
         except Exception as exc:
             logger.error("[%s] toolset recheck for turn %s failed: %s", self.name, turn_id,
                          type(exc).__name__)
             logger.debug("[%s] toolset recheck failure", self.name, exc_info=True)
             return RECHECK_UNVERIFIED
-        chat_only = toolset_policy.is_chat_only(self._toolset_override)
         if ((chat_only and toolset_policy.leaked_toolsets(effective))
                 or (not chat_only and "clarify" in effective)):
             return TOOLSETS_CHANGED
+        if approvals_off:
+            return APPROVALS_OFF
         return DISPLAY_CHANGED if unsafe else None
 
     def _hermes_session_busy(self, event: MessageEvent) -> bool:

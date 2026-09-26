@@ -148,7 +148,8 @@ def test_troubleshooting_carries_the_refusals_added_after_the_plan():
     per_turn_fmt = _logger_error_format(adapter.StoryChatAdapter._on_message, "refused turn")
     _, _, per_turn_suffix = per_turn_fmt.partition("refused turn %s")
     assert per_turn_suffix
-    for reason in (adapter.TOOLSETS_CHANGED, adapter.DISPLAY_CHANGED, adapter.RECHECK_UNVERIFIED):
+    for reason in (adapter.TOOLSETS_CHANGED, adapter.DISPLAY_CHANGED, adapter.RECHECK_UNVERIFIED,
+                   adapter.APPROVALS_OFF):
         assert f"refused turn …{per_turn_suffix % reason}" in README
 
 
@@ -203,6 +204,19 @@ async def test_troubleshooting_covers_the_toolset_limits_of_hello(monkeypatch, s
     assert await adapter.connect() is False
     prefix, resolves, _ = adapter.fatal_error_message.partition(" resolves to ")
     assert resolves and f"| `{prefix}{resolves}…` |" in README
+
+
+@pytest.mark.asyncio
+async def test_troubleshooting_covers_hermes_approvals_off(monkeypatch, storychat_env):
+    import tools.approval_context
+    monkeypatch.setattr(tools.approval_context, "_get_approval_config", lambda: {"mode": False})
+    monkeypatch.setenv("STORYCHAT_TOOLSETS", "terminal")
+    adapter = make_adapter()
+    assert await adapter.connect() is False
+    prefix, off, _ = adapter.fatal_error_message.partition(" are off ")
+    assert off and f"| `{prefix}{off.rstrip()} …` |" in README
+    text = " ".join(README.split())
+    assert "`command_allowlist`" in text and "`approvals.mode: smart`" in text
 
 
 def test_troubleshooting_covers_proxy_errors_and_busy_turns():
