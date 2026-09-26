@@ -82,6 +82,19 @@ def test_rejects_invalid_server_frames(raw):
         protocol.parse_server_frame(raw)
 
 
+@pytest.mark.parametrize("build", [
+    lambda: protocol.send(TURN_ID, CHAT_ID, MSG_ID, "Hi", None, "answer"),
+    lambda: protocol.edit(TURN_ID, CHAT_ID, MSG_ID, "Hi", True, "answer"),
+    lambda: protocol.turn_end(TURN_ID, CHAT_ID, "finished"),
+    lambda: protocol.approval_ack(APPROVAL_ID, False, "wrong_pin"),
+])
+def test_refuses_a_kind_or_reason_the_relay_would_reject(build):
+    # The relay closes with 4400 on an unknown kind/reason, which the plugin reports as "protocol
+    # mismatch — update storychat-hermes": fail here, where the typo is.
+    with pytest.raises(ValueError):
+        build()
+
+
 def test_refuses_to_build_frames_over_one_mebibyte():
     with pytest.raises(protocol.FrameTooLarge):
         protocol.send(TURN_ID, CHAT_ID, MSG_ID, "x" * protocol.MAX_FRAME_BYTES, None, "reply")

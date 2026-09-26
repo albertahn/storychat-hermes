@@ -59,6 +59,12 @@ def _encode(frame_type: str, fields: Dict[str, Any]) -> str:
 # ── H→S builders ────────────────────────────────────────────────────────────
 
 
+def _one_of(value: Any, allowed: Sequence[Any], what: str) -> None:
+    """The relay closes with 4400 on any other value, which reads as a protocol mismatch."""
+    if value not in allowed:
+        raise ValueError(f"{what} must be one of {', '.join(map(str, allowed))}")
+
+
 def hello(plugin_version: str, effective_toolsets: Sequence[str]) -> str:
     return _encode("hello", {"pluginVersion": plugin_version,
                              "effectiveToolsets": list(effective_toolsets)})
@@ -66,11 +72,13 @@ def hello(plugin_version: str, effective_toolsets: Sequence[str]) -> str:
 
 def send(turn_id: str, chat_id: str, msg_id: str, content: str,
          reply_to: Optional[str], kind: str) -> str:
+    _one_of(kind, SEND_KINDS, "send.kind")
     return _encode("send", {"turnId": turn_id, "chatId": chat_id, "msgId": msg_id,
                             "content": content, "replyTo": reply_to, "kind": kind})
 
 
 def edit(turn_id: str, chat_id: str, msg_id: str, content: str, final: bool, kind: str) -> str:
+    _one_of(kind, SEND_KINDS, "edit.kind")
     return _encode("edit", {"turnId": turn_id, "chatId": chat_id, "msgId": msg_id,
                             "content": content, "final": final, "kind": kind})
 
@@ -88,6 +96,7 @@ def approval_ack(approval_id: str, resolved: bool, reason: Optional[str] = None,
                  attempts_left: Optional[int] = None) -> str:
     fields: Dict[str, Any] = {"approvalId": approval_id, "resolved": resolved}
     if reason is not None:
+        _one_of(reason, ACK_REASONS, "approval_ack.reason")
         fields["reason"] = reason
     if attempts_left is not None:
         fields["attemptsLeft"] = attempts_left
@@ -99,6 +108,7 @@ def approval_expired(approval_id: str) -> str:
 
 
 def turn_end(turn_id: str, chat_id: str, reason: str) -> str:
+    _one_of(reason, TURN_END_REASONS, "turn_end.reason")
     return _encode("turn_end", {"turnId": turn_id, "chatId": chat_id, "reason": reason})
 
 
