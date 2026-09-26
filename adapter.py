@@ -183,15 +183,6 @@ class StoryChatAdapter(BasePlatformAdapter):
             return self._fail("storychat_toolsets_unverified",
                               f"could not verify the StoryChat toolsets ({type(exc).__name__}); "
                               "refusing to connect", retryable=False)
-        too_long = sum(len(name) > protocol.MAX_TOOLSET_NAME_CHARS for name in effective)
-        if len(effective) > protocol.MAX_HELLO_TOOLSETS or too_long:
-            return self._fail(
-                "storychat_toolsets_invalid",
-                f"StoryChat accepts at most {protocol.MAX_HELLO_TOOLSETS} toolsets with names of up "
-                f"to {protocol.MAX_TOOLSET_NAME_CHARS} characters, but STORYCHAT_TOOLSETS resolves to "
-                f"{len(effective)} toolsets, {too_long} of them with a longer name. Name fewer "
-                "toolsets or MCP servers (or give a long-named MCP server a shorter name), then "
-                "restart the gateway.", retryable=False)
         chat_only = toolset_policy.is_chat_only(override)
         leaked = toolset_policy.leaked_toolsets(effective) if chat_only else []
         if leaked:
@@ -209,6 +200,15 @@ class StoryChatAdapter(BasePlatformAdapter):
                 "turns would hang. Name toolsets one by one (for example web,file,terminal) or "
                 "add clarify to agent.disabled_toolsets in config.yaml, then restart the gateway.",
                 retryable=False)
+        too_long = sum(len(name) > protocol.MAX_TOOLSET_NAME_CHARS for name in effective)
+        if len(effective) > protocol.MAX_HELLO_TOOLSETS or too_long:
+            return self._fail(
+                "storychat_toolsets_invalid",
+                f"StoryChat accepts at most {protocol.MAX_HELLO_TOOLSETS} toolsets with names of up "
+                f"to {protocol.MAX_TOOLSET_NAME_CHARS} characters, but STORYCHAT_TOOLSETS resolves to "
+                f"{len(effective)} toolsets, {too_long} of them with a longer name. Name fewer "
+                "toolsets or MCP servers (or give a long-named MCP server a shorter name), then "
+                "restart the gateway.", retryable=False)
         if not chat_only and _approvals_bypassed(""):
             return self._fail(
                 "storychat_approvals_off",
@@ -526,7 +526,8 @@ class StoryChatAdapter(BasePlatformAdapter):
     def _recheck_toolsets(self, turn_id: str, session_key: str) -> Optional[str]:
         """Hermes re-reads config.yaml every turn (gateway/run_turn.py _load_gateway_config), so a
         config edit after startup could otherwise bypass the connect-time self-checks (spec §9.3).
-        Loaded once so every check sees the same snapshot. Returns why the turn must be refused, or
+        Loaded once so the toolset, display and memory checks see the same snapshot (approvals are
+        read the way Hermes reads them for each command). Returns why the turn must be refused, or
         None."""
         chat_only = toolset_policy.is_chat_only(self._toolset_override)
         try:

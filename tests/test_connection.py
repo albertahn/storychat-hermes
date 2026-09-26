@@ -270,6 +270,15 @@ async def test_toolsets_the_relay_would_reject_in_hello_refuse_to_connect(monkey
         assert server.requests == []
 
 
+async def test_chat_only_reports_leaked_toolsets_before_the_hello_limits(monkeypatch, storychat_env):
+    import hermes_cli.tools_config
+    monkeypatch.setattr(hermes_cli.tools_config, "_get_platform_tools",
+                        lambda config, platform, **kw: {f"plugin{i}" for i in range(101)})
+    adapter = make_adapter()
+    assert await adapter.connect() is False
+    assert adapter.fatal_error_code == "storychat_toolsets_leaked"
+
+
 async def test_the_most_toolsets_the_relay_accepts_still_connect(monkeypatch, storychat_env):
     import hermes_cli.tools_config
     from storychat_hermes import protocol
