@@ -46,7 +46,7 @@ _OUTCOME_REASONS = {ProcessingOutcome.SUCCESS: "done", ProcessingOutcome.CANCELL
                     ProcessingOutcome.FAILURE: "error"}
 # Spec §9.3: logged exactly, with the real id, when STORYCHAT_ALLOWED_USERS does not name the owner.
 NOT_ALLOWED_MSG = "STORYCHAT_ALLOWED_USERS must contain your StoryChat userId {user_id} — copy it from storychat.app/chat/hermes"
-PROXY_MSG = "proxy settings are invalid or need python-socks — check HTTPS_PROXY/ALL_PROXY"
+PROXY_MSG = "proxy settings are invalid or need python-socks — check HTTPS_PROXY/WSS_PROXY/SOCKS_PROXY"
 # Why the per-turn recheck (R-T12) refused a turn; the README troubleshooting table quotes these.
 TOOLSETS_CHANGED = "the StoryChat toolsets changed since startup"
 DISPLAY_CHANGED = "the StoryChat display settings changed since startup"
@@ -211,7 +211,7 @@ class StoryChatAdapter(BasePlatformAdapter):
         except _ConnectFailed:
             raise
         except (InvalidProxy, ImportError):
-            # A bad HTTPS_PROXY/ALL_PROXY URL, or a SOCKS proxy without python-socks: retrying
+            # A bad HTTPS_PROXY/WSS_PROXY/SOCKS_PROXY URL, or a SOCKS proxy without python-socks: retrying
             # cannot help. The exception text can carry proxy credentials, so it is not logged.
             raise _ConnectFailed(lifecycle.Verdict(False, 0.0, "storychat_proxy_invalid",
                                                    PROXY_MSG)) from None

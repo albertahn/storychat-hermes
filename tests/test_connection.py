@@ -339,7 +339,7 @@ async def test_unusable_proxy_settings_are_fatal_and_release_the_lock(monkeypatc
     assert await adapter.connect() is False
     assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == ("storychat_proxy_invalid", False)
     assert adapter.fatal_error_message == (
-        "proxy settings are invalid or need python-socks — check HTTPS_PROXY/ALL_PROXY")
+        "proxy settings are invalid or need python-socks — check HTTPS_PROXY/WSS_PROXY/SOCKS_PROXY")
     assert storychat_locks() == []
 
 
