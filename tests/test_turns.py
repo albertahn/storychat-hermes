@@ -167,13 +167,35 @@ async def test_platform_notices_are_status(live):
     # is set", subagent failures) must not be saved as the character's reply either.
     adapter, server = live
     event = await start_turn(adapter, server)
-    from gateway.run import GatewayRunner
-    runner = SimpleNamespace(_delivery_adapter_for=lambda source: adapter, config=None,
-                             _thread_metadata_for_source=lambda source: None)
-    await GatewayRunner._deliver_platform_notice(runner, event.source, "notice")
+    await deliver_platform_notice(adapter, event.source, "notice")
     frame = await server.next_frame()
     assert (frame["type"], frame["turnId"], frame["kind"], frame["content"]) == (
         "send", TURN_ID, "status", "notice")
+
+
+async def deliver_platform_notice(adapter, source, content):
+    from gateway.run import GatewayRunner
+    runner = SimpleNamespace(_delivery_adapter_for=lambda s: adapter, config=None,
+                             _thread_metadata_for_source=lambda s: None)
+    await GatewayRunner._deliver_platform_notice(runner, source, content)
+
+
+@pytest.mark.parametrize("configured", ["public", "pubilc"])
+async def test_platform_notices_are_status_even_when_configured_public(monkeypatch, storychat_env,
+                                                                       configured):
+    # StoryChat has no public/private audience: "public" (explicit, or a typo Hermes normalises
+    # to public) would send notices as the character's reply.
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter(extra={"notice_delivery": configured})
+        assert await adapter.connect() is True
+        try:
+            event = await start_turn(adapter, server)
+            await deliver_platform_notice(adapter, event.source, "notice")
+            frame = await server.next_frame()
+            assert (frame["type"], frame["kind"]) == ("send", "status")
+        finally:
+            await adapter.disconnect()
 
 
 @pytest.mark.parametrize("outcome,reason", [(ProcessingOutcome.SUCCESS, "done"),

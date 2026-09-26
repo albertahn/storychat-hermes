@@ -102,9 +102,10 @@ class StoryChatAdapter(BasePlatformAdapter):
         # Hermes delivers operational notices ("No home channel is set", subagent failures) with a
         # plain send() unless notice_delivery is "private" (gateway/run_notifications.py
         # _deliver_platform_notice); a plain send would be saved as the character's reply. "private"
-        # routes them to send_private_notice, which sends them as status. setdefault keeps an
-        # explicit choice in config.yaml.
-        self.config.extra.setdefault("notice_delivery", "private")
+        # routes them to send_private_notice, which sends them as status. StoryChat has no
+        # public/private audience, so "public" (explicit, or a typo Hermes normalises to public)
+        # would only save notices as the reply: always override it.
+        self.config.extra["notice_delivery"] = "private"
 
     # ── connection lifecycle (spec §9.4) ────────────────────────────────────
 

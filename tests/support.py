@@ -47,13 +47,13 @@ def message_frame(**overrides) -> dict:
     return frame
 
 
-def make_adapter():
+def make_adapter(extra=None):
     """A StoryChatAdapter with Hermes' message pipeline mocked and backoff sleeps recorded."""
     from gateway.config import PlatformConfig
     from storychat_hermes.adapter import StoryChatAdapter
 
     register_storychat_platform()
-    adapter = StoryChatAdapter(PlatformConfig(enabled=True, extra={}))
+    adapter = StoryChatAdapter(PlatformConfig(enabled=True, extra=dict(extra or {})))
     adapter.handle_message = AsyncMock()
     adapter.slept = []
 
