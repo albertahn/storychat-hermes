@@ -218,3 +218,39 @@ async def test_a_failed_final_is_never_redelivered_into_the_next_turn(live):
     assert frames[-1] == {"v": 1, "type": "turn_end", "turnId": turn_b, "chatId": CHAT_ID,
                           "reason": "done"}
     assert rows == []  # the adapter opted out of the ledger: nothing is ever redelivered
+
+
+async def test_a_reply_longer_than_one_message_is_saved_without_chunk_markers(live):
+    # A provider that returns a whole completion as one delta makes Hermes' stream consumer split
+    # it with the adapter's truncate_message (gateway/stream_consumer.py _split_first_send). The
+    # relay joins the segments into one saved reply, so a " (1/3)" marker would stay in it.
+    import re
+
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+    adapter, server = live
+    text = " ".join(f"word{i}" for i in range(6000))  # about 2.5 × MAX_MESSAGE_LENGTH
+
+    async def agent(event):
+        consumer = GatewayStreamConsumer(adapter, event.source.chat_id,
+                                         StreamConsumerConfig(edit_interval=0.01),
+                                         initial_reply_to_id=event.message_id)
+        run = asyncio.create_task(consumer.run())
+        consumer.on_delta(text)
+        consumer.finish()
+        await run
+        return None  # already delivered by the stream
+
+    adapter.set_message_handler(agent)
+    await server.push("message", **message_frame())
+    frames = [await server.next_frame()]
+    while frames[-1]["type"] != "turn_end":
+        frames.append(await server.next_frame())
+    segments = {}  # the relay keeps each msgId's latest content, in send order
+    for frame in frames:
+        if frame["type"] in ("send", "edit") and frame["kind"] == "reply":
+            segments[frame["msgId"]] = frame["content"]
+    saved = "\n\n".join(segments.values())
+    assert len(segments) > 1
+    assert not re.search(r" \(\d+/\d+\)", saved)
+    assert saved.split() == text.split()
+    assert frames[-1]["reason"] == "done"

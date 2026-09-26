@@ -12,7 +12,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidProxy, InvalidStatus
 
@@ -601,6 +601,17 @@ class StoryChatAdapter(BasePlatformAdapter):
                 self._spawn(self._dispatch_stop(turn))
 
     # ── outbound: send / edit / turn_end ────────────────────────────────────
+
+    @staticmethod
+    def truncate_message(content: str, max_length: int = 4096,
+                         len_fn: Optional[Callable[[str], int]] = None) -> List[str]:
+        """Hermes' own split without its " (i/n)" markers. The stream consumer splits a reply that
+        overflows MAX_MESSAGE_LENGTH with this (gateway/stream_consumer.py _split_first_send), and
+        the relay joins the segments into one saved reply, where a marker would stay mid-text."""
+        chunks = BasePlatformAdapter.truncate_message(content, max_length, len_fn=len_fn)
+        if len(chunks) < 2:
+            return chunks
+        return [chunk.removesuffix(f" ({i}/{len(chunks)})") for i, chunk in enumerate(chunks, 1)]
 
     def _strip_cursor(self, content: str) -> str:
         streaming = getattr(getattr(self.gateway_runner, "config", None), "streaming", None)
