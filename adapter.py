@@ -602,6 +602,14 @@ class StoryChatAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="not connected to StoryChat")
         return SendResult(success=True, message_id=message_id)
 
+    async def _record_delivery_obligation(self, event: MessageEvent, session_key: str,
+                                          text_content: str, delivery_adapter: Any,
+                                          is_ephemeral_response: bool) -> Optional[str]:
+        """Opt out of Hermes' delivery ledger (base.py send_final_ledgered): it redelivers a failed
+        final 30 s and 120 s later with no reply_to, when a newer turn of this chat may be running,
+        and the relay would save it as that turn's reply. The relay already ended the old turn."""
+        return None
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         turn = self._turns.get(event.source.chat_id)
         if turn is None or turn.message_id != event.message_id:

@@ -42,10 +42,15 @@ _NOTICE_PREFIXES = (
 def classify(content: str) -> Optional[str]:
     """``FAILURE`` or ``NOTICE`` for Hermes' own copy, None for text that may be the character's reply."""
     from agent.turn_failure_copy import FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+    from gateway.delivery_ledger import FLOOD_MARKER, RECONNECTED_MARKER, RECOVERED_MARKER
     from gateway.run import _CONTEXT_OVERFLOW_REPLY
     text = content.strip()
     if (text.startswith(_FAILURE_PREFIXES + (_CONTEXT_OVERFLOW_REPLY,))
             # gateway/run_turn.py _hmwa_add_failed_turn_notice ends every failed turn's reply so
             or text.endswith((FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE))):
         return FAILURE
-    return NOTICE if text.startswith(_NOTICE_PREFIXES) else None
+    # gateway/delivery_ledger.py marks a redelivered final and sends it with no reply_to. The
+    # adapter opts out of the ledger, but the boot sweep still redelivers a reply a crashed gateway
+    # had saved and not sent: it belongs to an earlier turn, never to the one running now.
+    redelivered = (RECOVERED_MARKER, RECONNECTED_MARKER, FLOOD_MARKER)
+    return NOTICE if text.startswith(_NOTICE_PREFIXES + redelivered) else None

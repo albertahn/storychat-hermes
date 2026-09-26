@@ -161,3 +161,48 @@ async def test_the_runner_resolves_opt_in_toolsets_for_storychat(monkeypatch, st
             assert "terminal" not in enabled
         finally:
             await adapter.disconnect()
+
+
+async def test_a_failed_final_is_never_redelivered_into_the_next_turn(live):
+    # Hermes' delivery ledger redelivers a final reply whose send failed (socket down) at +30 s and
+    # +120 s, with no reply_to (gateway/run_startup.py _redeliver_claimed_obligations). By then a
+    # later turn of the same chat may be running; the old reply must never be saved into it.
+    import time
+
+    from gateway.delivery_ledger import RECOVERED_MARKER, sweep_failed_for_runtime
+    adapter, server = live
+    real_send_frame = adapter._send_frame
+
+    async def socket_down_for_reply_a(frame):
+        return False if "Reply A" in frame else await real_send_frame(frame)
+
+    adapter._send_frame = socket_down_for_reply_a
+    release_b = asyncio.Event()
+
+    async def agent(event):
+        if event.message_id == MESSAGE_ID:
+            return "Reply A"
+        await release_b.wait()
+        return "Reply B"
+
+    adapter.set_message_handler(agent)
+    await server.push("message", **message_frame())
+    assert (await server.next_frame())["reason"] == "error"  # A's final never reached the relay
+    adapter._send_frame = real_send_frame  # the socket is back
+    await wait_until(lambda: not adapter._active_sessions)
+    turn_b, message_b = "e" * 32, "65c0000000000000000000d4"
+    await server.push("message", **message_frame(turnId=turn_b, messageId=message_b))
+    await wait_until(lambda: adapter._active_sessions)
+    # What the runner's redelivery timer does once A's retry is due.
+    rows = sweep_failed_for_runtime("storychat", now=time.time() + 3600)
+    for row in rows:
+        marker = row.get("marker", RECOVERED_MARKER) if row.get("needs_marker") else ""
+        await adapter.send(chat_id=row["chat_id"], content=marker + row["content"], metadata=None)
+    release_b.set()
+    frames = [await server.next_frame()]
+    while frames[-1]["type"] != "turn_end":
+        frames.append(await server.next_frame())
+    assert [f["content"] for f in frames if f.get("kind") == "reply"] == ["Reply B"]
+    assert frames[-1] == {"v": 1, "type": "turn_end", "turnId": turn_b, "chatId": CHAT_ID,
+                          "reason": "done"}
+    assert rows == []  # the adapter opted out of the ledger: nothing is ever redelivered

@@ -191,6 +191,20 @@ async def deliver_platform_notice(adapter, source, content):
     await GatewayRunner._deliver_platform_notice(runner, source, content)
 
 
+@pytest.mark.parametrize("marker", ["RECOVERED_MARKER", "RECONNECTED_MARKER", "FLOOD_MARKER"])
+async def test_a_redelivered_reply_from_an_earlier_turn_is_status(live, marker):
+    # gateway/delivery_ledger.py: a redelivered final carries the ledger's marker and no reply_to.
+    # The plugin opts out of the ledger, but the boot sweep still redelivers a reply a crashed
+    # gateway had saved but not sent, into whatever turn is running then.
+    import gateway.delivery_ledger as ledger
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    assert (await adapter.send(CHAT_ID, getattr(ledger, marker) + "Reply A")).success is True
+    assert (await server.next_frame())["kind"] == "status"
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert (await server.next_frame())["reason"] == "done"
+
+
 async def test_gateway_warnings_are_status(live):
     # gateway/run_turn.py sends context-hygiene failures ("Shortening the conversation history
     # failed…") through BasePlatformAdapter.emit_warning, a plain send() with no marker.
