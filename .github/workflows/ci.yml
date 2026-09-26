@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Daily, so a Hermes main change that breaks the plugin contract (for example the runner no
+  # longer honouring toolsets_for_source) fails CI even when this repo has no new commits.
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Hermes ${{ matrix.hermes }} / Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Hermes Agent v0.21.5, the release this plugin is written against.
+          - hermes: v2026.9.24
+            python: "3.11"
+          - hermes: v2026.9.24
+            python: "3.13"
+          # Hermes main only installs its dependencies on Python 3.14; this job catches
+          # drift in the plugin contract before it reaches a release.
+          - hermes: main
+            python: "3.14"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Install Hermes Agent ${{ matrix.hermes }}
+        run: |
+          git clone --depth 1 --branch ${{ matrix.hermes }} https://github.com/NousResearch/hermes-agent "$RUNNER_TEMP/hermes-agent"
+          uv pip install --system -e "$RUNNER_TEMP/hermes-agent"
+      - name: Install test tools
+        run: python -m pip install -r requirements-dev.txt
+      - name: Hermes plugin admission check
+        run: HERMES_HOME="$RUNNER_TEMP/hermes-home" hermes plugins validate .
+      - name: Tests
+        run: python -m pytest tests -q

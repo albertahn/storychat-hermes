@@ -2,3 +2,6 @@
 # and the plugin's one runtime dependency, websockets 15, ships with Hermes.
 pytest==9.1.1
 pytest-asyncio==1.4.0
+# tests/test_register.py reads plugin.yaml with it. Hermes v0.21.5 pins this version; Hermes
+# main no longer depends on PyYAML (it parses YAML with ruamel.yaml).
+PyYAML==6.0.3
