@@ -221,6 +221,60 @@ async def test_turn_end_maps_the_processing_outcome(live, outcome, reason):
     assert (await adapter.send(CHAT_ID, "after the end")).success is False
 
 
+def _billing_text():
+    from agent.conversation_loop import _billing_terminal_label
+    return _billing_terminal_label("HTTP 402: insufficient credits", False)
+
+
+def _overflow_text():
+    from gateway.run import _CONTEXT_OVERFLOW_REPLY
+    return _CONTEXT_OVERFLOW_REPLY
+
+
+def _with_failed_notice(text, partial=False):
+    from agent.turn_failure_copy import FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+    return f"{text}\n\n{PARTIAL_FAILED_TURN_NOTICE if partial else FAILED_TURN_NOTICE}"
+
+
+# One per Hermes turn-failure template (Hermes still ends these turns as SUCCESS).
+HERMES_FAILURE_TEXTS = [
+    lambda: ("⚠️ Something went wrong and I couldn't finish this reply. Your sign-in to the AI model "
+             "service has expired or the API key is wrong."),
+    lambda: "⚠️ Your message was interrupted before processing started (likely by a recent /stop).",
+    lambda: "⚠️ Your message wasn't processed (the previous turn was still being cleaned up).",
+    lambda: "⚠️ Processing completed but no response was generated. Try sending it again.",
+    lambda: "⚠️ I had to stop before finishing: processing incomplete. Use /retry to try again.",
+    lambda: "⚠️ I couldn't connect to the AI model service, so this message wasn't processed.",
+    _billing_text,
+    _overflow_text,
+    lambda: _with_failed_notice("OpenRouter rejected your API key, so the model can't be reached."),
+    lambda: _with_failed_notice("The model service kept failing.", partial=True),
+]
+
+
+@pytest.mark.parametrize("failure", HERMES_FAILURE_TEXTS)
+async def test_a_hermes_failure_text_is_status_and_ends_the_turn_with_error(live, failure):
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    text = failure()
+    assert (await adapter.send(CHAT_ID, text, reply_to=MESSAGE_ID)).success is True
+    frame = await server.next_frame()
+    assert (frame["kind"], frame["content"]) == ("status", text)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "error"}
+
+
+async def test_a_reply_that_only_mentions_a_failure_stays_the_reply(live):
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    text = "The captain frowns. \"⚠️ Something went wrong and I couldn't finish this reply,\" he reads."
+    await adapter.send(CHAT_ID, text, reply_to=MESSAGE_ID)
+    assert (await server.next_frame())["kind"] == "reply"
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert (await server.next_frame())["reason"] == "done"
+
+
 async def test_untracked_events_send_no_turn_end(live):
     adapter, server = live
     event = await start_turn(adapter, server)

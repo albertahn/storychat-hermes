@@ -42,6 +42,43 @@ async def test_a_reply_then_turn_end_done(live):
                                          "chatId": CHAT_ID, "reason": "done"}
 
 
+def _failed_turn_reply():
+    # gateway/run_turn.py appends the failed-turn notice to every failed turn's reply.
+    from agent.turn_failure_copy import FAILED_TURN_NOTICE
+    from gateway.run import GatewayRunner
+    return GatewayRunner._hmwa_add_failed_turn_notice(None, "OpenRouter rejected your API key.",
+                                                      FAILED_TURN_NOTICE)
+
+
+def _normalized(agent_result):
+    from gateway.run import _normalize_empty_agent_response
+    return _normalize_empty_agent_response(agent_result, "", history_len=0)
+
+
+# Hermes' own failure copy, produced by its real helpers so CI on Hermes main catches wording drift.
+@pytest.mark.parametrize("failure", [
+    lambda: _normalized({"failed": True, "error": "HTTP 401"}),
+    lambda: _normalized({"interrupted": True, "api_calls": 0}),
+    lambda: _normalized({"api_calls": 0}),
+    lambda: _normalized({"api_calls": 2}),
+    lambda: _normalized({"api_calls": 2, "partial": True, "error": "processing incomplete"}),
+    _failed_turn_reply,
+])
+async def test_a_hermes_failure_is_status_and_the_turn_ends_with_error(live, failure):
+    adapter, server = live
+    text = failure()
+
+    async def agent(event):
+        return text
+
+    adapter.set_message_handler(agent)
+    await server.push("message", **message_frame())
+    sent = await server.next_frame()
+    assert (sent["type"], sent["kind"], sent["content"]) == ("send", "status", text)
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "error"}
+
+
 async def test_chat_text_can_never_act_as_a_gateway_command(live):
     adapter, server = live
     seen = []

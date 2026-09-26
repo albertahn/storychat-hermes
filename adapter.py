@@ -22,7 +22,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 from . import approvals as approvals_mod
-from . import lifecycle, protocol, toolset_policy
+from . import lifecycle, notices, protocol, toolset_policy
 from . import settings as settings_mod
 from .approvals import ApprovalBook, PendingApproval, correlate_request_id
 
@@ -62,6 +62,7 @@ class _Turn:
     user_name: str
     chat_name: str
     stop_requested: bool = False
+    failed: bool = False  # Hermes sent its failed-turn copy (notices.FAILURE) for this turn
 
 
 class _ConnectFailed(Exception):
@@ -557,7 +558,11 @@ class StoryChatAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="no active StoryChat turn for this chat")
         is_status = (force_status or stop_turn_id is not None
                      or (metadata or {}).get("_interim_send") is True)
-        kind = "status" if is_status else "reply"
+        hermes_text = None if is_status else notices.classify(content)
+        if hermes_text == notices.FAILURE:
+            turn = replace(turn, failed=True)
+            self._turns[chat_id] = turn
+        kind = "status" if is_status or hermes_text else "reply"
         msg_id = uuid.uuid4().hex
         try:
             frame = protocol.send(turn.turn_id, chat_id, msg_id, self._strip_cursor(content),
@@ -596,7 +601,10 @@ class StoryChatAdapter(BasePlatformAdapter):
         self._turns.pop(turn.chat_id, None)
         self._approvals.drop_chat(turn.chat_id)
         self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != turn.turn_id}
-        reason = "interrupted" if turn.stop_requested else _OUTCOME_REASONS.get(outcome, "error")
+        if turn.stop_requested:
+            reason = "interrupted"
+        else:
+            reason = "error" if turn.failed else _OUTCOME_REASONS.get(outcome, "error")
         logger.info("[%s] turn %s ended: %s", self.name, turn.turn_id, reason)
         if not await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, reason)):
             logger.warning("[%s] could not send turn_end for turn %s (not connected)",
