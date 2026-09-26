@@ -143,7 +143,7 @@ Hermes history. In Hermes v0.21.5 this key is read from `~/.hermes/gateway.json`
   steer would end up in the memory your tool-enabled sessions read. So the plugin refuses to
   connect (and refuses turns if you add one later) unless you set `STORYCHAT_ALLOW_MEMORY_PROVIDER=1`
   in `~/.hermes/.env`. With it set, the plugin logs a warning once and connects. The built-in
-  `MEMORY.md` / `USER.md` store is always fine.
+  `MEMORY.md` / `USER.md` store never triggers this refusal.
 - **Chat text never controls the gateway.** Messages from StoryChat can't run `/approve`, `/yolo`,
   `/new` or any other command, and can't answer an approval.
 
