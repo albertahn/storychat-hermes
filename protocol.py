@@ -12,6 +12,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 1024 * 1024  # 1 MiB, equal to the server's maxPayload (spec §6 limits)
+# The relay closes with 4400 on a hello.effectiveToolsets longer than this, or with a longer name.
+MAX_HELLO_TOOLSETS = 100
+MAX_TOOLSET_NAME_CHARS = 128
 
 APPROVAL_CHOICES = ("once", "session", "always", "deny")
 SEND_KINDS = ("reply", "status")

@@ -166,6 +166,40 @@ async def test_unknown_toolset_name_refuses_to_connect(monkeypatch, storychat_en
         assert server.requests == []
 
 
+@pytest.mark.parametrize("resolved", [{"web", "m" * 129}, {f"mcp{i}" for i in range(101)}])
+async def test_toolsets_the_relay_would_reject_in_hello_refuse_to_connect(monkeypatch, storychat_env,
+                                                                         resolved):
+    # The relay closes with 4400 on a hello listing more than 100 toolsets or a name over 128
+    # characters, which the plugin would report as "protocol mismatch — update storychat-hermes".
+    import hermes_cli.tools_config
+    monkeypatch.setattr(hermes_cli.tools_config, "_get_platform_tools",
+                        lambda config, platform, **kw: set(resolved))
+    monkeypatch.setenv("STORYCHAT_TOOLSETS", "web")
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is False
+        assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == (
+            "storychat_toolsets_invalid", False)
+        assert server.requests == []
+
+
+async def test_the_most_toolsets_the_relay_accepts_still_connect(monkeypatch, storychat_env):
+    import hermes_cli.tools_config
+    from storychat_hermes import protocol
+    resolved = {f"mcp{i}" for i in range(protocol.MAX_HELLO_TOOLSETS - 1)} | {
+        "m" * protocol.MAX_TOOLSET_NAME_CHARS}
+    monkeypatch.setattr(hermes_cli.tools_config, "_get_platform_tools",
+                        lambda config, platform, **kw: set(resolved))
+    monkeypatch.setenv("STORYCHAT_TOOLSETS", "web")
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        assert server.hellos[0]["effectiveToolsets"] == sorted(resolved)
+        await adapter.disconnect()
+
+
 async def test_clarify_toolset_refuses_to_connect(monkeypatch, storychat_env):
     monkeypatch.setenv("STORYCHAT_TOOLSETS", "coding")
     async with FakeStoryChat() as server:

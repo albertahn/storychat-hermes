@@ -193,6 +193,18 @@ async def test_troubleshooting_covers_the_token_lock_and_rate_limiting(monkeypat
     assert lifecycle._RATE_LIMITED.message in README
 
 
+@pytest.mark.asyncio
+async def test_troubleshooting_covers_the_toolset_limits_of_hello(monkeypatch, storychat_env):
+    import hermes_cli.tools_config
+    monkeypatch.setattr(hermes_cli.tools_config, "_get_platform_tools",
+                        lambda config, platform, **kw: {"m" * 129})
+    monkeypatch.setenv("STORYCHAT_TOOLSETS", "web")
+    adapter = make_adapter()
+    assert await adapter.connect() is False
+    prefix, resolves, _ = adapter.fatal_error_message.partition(" resolves to ")
+    assert resolves and f"| `{prefix}{resolves}…` |" in README
+
+
 def test_troubleshooting_covers_proxy_errors_and_busy_turns():
     from storychat_hermes import adapter
     assert f"| `{adapter.PROXY_MSG}` |" in README
