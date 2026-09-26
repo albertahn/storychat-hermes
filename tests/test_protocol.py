@@ -85,3 +85,17 @@ def test_rejects_invalid_server_frames(raw):
 def test_refuses_to_build_frames_over_one_mebibyte():
     with pytest.raises(protocol.FrameTooLarge):
         protocol.send(TURN_ID, CHAT_ID, MSG_ID, "x" * protocol.MAX_FRAME_BYTES, None, "reply")
+
+
+@pytest.mark.parametrize("build", [
+    lambda text: protocol.send(TURN_ID, CHAT_ID, MSG_ID, text, None, "reply"),
+    lambda text: protocol.edit(TURN_ID, CHAT_ID, MSG_ID, text, False, "reply"),
+    lambda text: protocol.approval_request(TURN_ID, CHAT_ID, APPROVAL_ID, text, text, ["deny"], False, 1),
+])
+def test_lone_surrogates_become_replacement_characters(build):
+    # Hermes does not scrub streamed deltas, and a lone UTF-16 surrogate has no UTF-8 encoding (the
+    # relay closes with 1007 on invalid UTF-8). A pair split into two code units joins back up.
+    frame = build("hi \ud83d and 😀")
+    frame.encode("utf-8")
+    texts = [v for v in json.loads(frame).values() if isinstance(v, str) and v.startswith("hi")]
+    assert texts and all(t == "hi � and \U0001f600" for t in texts)

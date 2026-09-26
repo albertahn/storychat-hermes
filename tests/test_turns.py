@@ -139,6 +139,17 @@ async def test_reply_send_and_edit_strip_the_stream_cursor(live):
                                          "content": "Ahoy, matey", "final": True, "kind": "reply"}
 
 
+async def test_a_lone_surrogate_in_streamed_text_is_sent_not_raised(live):
+    adapter, server = live
+    await start_turn(adapter, server)
+    sent = await adapter.send(CHAT_ID, "Ahoy \ud83d", reply_to=MESSAGE_ID)
+    assert sent.success is True
+    assert (await server.next_frame())["content"] == "Ahoy �"
+    edited = await adapter.edit_message(CHAT_ID, sent.message_id, "Ahoy \ud83d!")
+    assert edited.success is True
+    assert (await server.next_frame())["content"] == "Ahoy �!"
+
+
 async def test_interim_sends_are_status(live):
     adapter, server = live
     await start_turn(adapter, server)

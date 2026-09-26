@@ -44,7 +44,14 @@ def is_object_id(value: Any) -> bool:
 def _encode(frame_type: str, fields: Dict[str, Any]) -> str:
     data = json.dumps({"v": PROTOCOL_VERSION, "type": frame_type, **fields},
                       ensure_ascii=False, separators=(",", ":"))
-    if len(data.encode("utf-8")) > MAX_FRAME_BYTES:
+    try:
+        size = len(data.encode("utf-8"))
+    except UnicodeEncodeError:
+        # Hermes does not scrub lone UTF-16 surrogates from streamed text. They have no UTF-8 form
+        # (the relay closes with 1007 on invalid UTF-8), so each becomes U+FFFD; a split pair rejoins.
+        data = data.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+        size = len(data.encode("utf-8"))
+    if size > MAX_FRAME_BYTES:
         raise FrameTooLarge(f"{frame_type} frame exceeds {MAX_FRAME_BYTES} bytes")
     return data
 
