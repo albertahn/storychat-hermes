@@ -98,19 +98,19 @@ def test_a_non_prod_block_with_both_url_lines_reaches_the_local_relay(monkeypatc
     assert (cfg.url, cfg.is_local_dev) == ("ws://localhost:8080/api/v1/hermes/connect", True)
 
 
-def _logger_error_format(func, keyword: str) -> str:
-    """Return the literal format string passed to a ``logger.error(...)`` call inside ``func``
+def _logger_error_format(func, keyword: str, level: str = "error") -> str:
+    """Return the literal format string passed to a ``logger.<level>(...)`` call inside ``func``
     whose text contains ``keyword``. Reads the AST rather than re-typing the message, so adjacent
     string literals are folded exactly as Python folds them at parse time and the check breaks the
     moment the source message changes, instead of silently drifting from a copied literal."""
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
     for node in ast.walk(tree):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "error" and node.args
+                and node.func.attr == level and node.args
                 and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
                 and keyword in node.args[0].value):
             return node.args[0].value
-    raise AssertionError(f"no logger.error(...) call containing {keyword!r} found in {func!r}")
+    raise AssertionError(f"no logger.{level}(...) call containing {keyword!r} found in {func!r}")
 
 
 def test_troubleshooting_carries_the_refusals_added_after_the_plan():
@@ -191,3 +191,13 @@ async def test_troubleshooting_covers_the_token_lock_and_rate_limiting(monkeypat
     held, in_use, _ = adapter.fatal_error_message.partition(" already in use")
     assert in_use and f"{held}{in_use}" in README
     assert lifecycle._RATE_LIMITED.message in README
+
+
+def test_troubleshooting_covers_proxy_errors_and_busy_turns():
+    from storychat_hermes import adapter
+    assert f"| `{adapter.PROXY_MSG}` |" in README
+    busy_fmt = _logger_error_format(adapter.StoryChatAdapter._on_message, "still finishing",
+                                    level="warning")
+    _, _, busy_suffix = busy_fmt.partition("refused turn %s")
+    assert busy_suffix and f"| `refused turn …{busy_suffix}` |" in README
+    assert "wait a moment and send the message again" in README.lower()
