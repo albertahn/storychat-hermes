@@ -79,6 +79,18 @@ async def test_a_hermes_failure_is_status_and_the_turn_ends_with_error(live, fai
                                          "chatId": CHAT_ID, "reason": "error"}
 
 
+async def test_a_message_hermes_drops_ends_the_turn_with_error(live, monkeypatch):
+    # Hermes drops an event whose multiplexed profile route targets a profile this gateway does not
+    # serve (base.py handle_message: _drop_unresolved). No on_processing_complete would ever end
+    # the turn, so the relay would hold the chat busy for up to 14 minutes.
+    adapter, server = live
+    monkeypatch.setattr(adapter, "_drop_unresolved", lambda event: True)
+    await server.push("message", **message_frame())
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "error"}
+    assert adapter._turns == {}
+
+
 async def test_chat_text_can_never_act_as_a_gateway_command(live):
     adapter, server = live
     seen = []

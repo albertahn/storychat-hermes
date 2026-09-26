@@ -64,6 +64,19 @@ async def test_second_message_while_a_turn_runs_is_refused(live):
     assert adapter.handle_message.await_count == 1
 
 
+async def test_a_message_hermes_does_not_admit_ends_the_turn_with_error(live):
+    adapter, server = live
+
+    async def not_admitted(event):  # Hermes leaves event._gateway_accepted False
+        return None
+
+    adapter.handle_message.side_effect = not_admitted
+    await server.push("message", **message_frame())
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "error"}
+    assert adapter._turns == {}
+
+
 async def test_hermes_gets_the_user_id_as_spelled_in_the_allowlist(monkeypatch, storychat_env):
     # The relay sends lowercase ids; Hermes' own allowlist check is an exact string match.
     monkeypatch.setenv("STORYCHAT_ALLOWED_USERS", USER_ID.upper())

@@ -434,8 +434,8 @@ class StoryChatAdapter(BasePlatformAdapter):
                            self.name, turn_id)
             await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
             return
-        self._turns[chat_id] = _Turn(turn_id, chat_id, frame["messageId"], frame["userName"],
-                                     frame["chatName"])
+        stored = _Turn(turn_id, chat_id, frame["messageId"], frame["userName"], frame["chatName"])
+        self._turns[chat_id] = stored
         if running is not None:
             # Only reachable here when running.stop_requested (the guard above already refused any
             # other case) and Hermes already released its session: no Hermes run will ever end the
@@ -447,7 +447,24 @@ class StoryChatAdapter(BasePlatformAdapter):
             logger.info("[%s] turn %s ended: %s", self.name, running.turn_id, "interrupted")
             await self._send_frame(protocol.turn_end(running.turn_id, chat_id, "interrupted"))
         logger.info("[%s] turn %s started", self.name, turn_id)
-        await self.handle_message(event)
+        try:
+            await self.handle_message(event)
+        finally:
+            if event._gateway_accepted is not True:
+                await self._end_unadmitted_turn(stored)
+
+    async def _end_unadmitted_turn(self, turn: _Turn) -> None:
+        """Hermes did not take the event (base.py handle_message sets no admission receipt when it
+        drops it, e.g. _drop_unresolved), so no on_processing_complete will ever end this turn and
+        the relay would keep the chat busy until MAX_TURN_MS."""
+        current = self._turns.get(turn.chat_id)
+        if current is None or current.turn_id != turn.turn_id:
+            return
+        self._turns.pop(turn.chat_id)
+        self._approvals.drop_chat(turn.chat_id)
+        self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != turn.turn_id}
+        logger.warning("[%s] turn %s ended: error (Hermes did not accept it)", self.name, turn.turn_id)
+        await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, "error"))
 
     def _recheck_toolsets(self, turn_id: str) -> Optional[str]:
         """R-T12: config.yaml is re-read every turn (gateway/run_turn.py _load_gateway_config), so a

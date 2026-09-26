@@ -54,7 +54,11 @@ def make_adapter(extra=None):
 
     register_storychat_platform()
     adapter = StoryChatAdapter(PlatformConfig(enabled=True, extra=dict(extra or {})))
-    adapter.handle_message = AsyncMock()
+
+    async def _admit(event):  # Hermes' admission receipt (gateway/platforms/base.py handle_message)
+        event._gateway_accepted = True
+
+    adapter.handle_message = AsyncMock(side_effect=_admit)
     adapter.slept = []
 
     async def _no_wait(delay):
