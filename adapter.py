@@ -432,15 +432,18 @@ class StoryChatAdapter(BasePlatformAdapter):
                            self.name, turn_id)
             await self._send_frame(protocol.turn_end(turn_id, chat_id, "error"))
             return
-        if running is not None:
-            # Only reachable here when running.stop_requested (the guard above already refused any
-            # other case) and Hermes already released its session: the old turn's
-            # on_processing_complete never runs, so its approvals would otherwise stay answerable
-            # forever once this new turn supersedes it.
-            self._approvals.drop_chat(chat_id)
-            self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != running.turn_id}
         self._turns[chat_id] = _Turn(turn_id, chat_id, frame["messageId"], frame["userName"],
                                      frame["chatName"])
+        if running is not None:
+            # Only reachable here when running.stop_requested (the guard above already refused any
+            # other case) and Hermes already released its session: no Hermes run will ever end the
+            # old turn now, so its approvals would stay answerable forever and the relay would never
+            # get its turn_end. The new turn is stored first so a pending _send_stop for the old
+            # one finds it replaced and cannot send a second turn_end.
+            self._approvals.drop_chat(chat_id)
+            self._msg_kinds = {k: v for k, v in self._msg_kinds.items() if v[0] != running.turn_id}
+            logger.info("[%s] turn %s ended: %s", self.name, running.turn_id, "interrupted")
+            await self._send_frame(protocol.turn_end(running.turn_id, chat_id, "interrupted"))
         logger.info("[%s] turn %s started", self.name, turn_id)
         await self.handle_message(event)
 

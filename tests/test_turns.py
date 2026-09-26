@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from types import SimpleNamespace
 
@@ -293,6 +294,8 @@ async def test_message_admitted_while_a_stopped_turn_unwinds_but_its_late_sends_
     await server.push("message", **message_frame(turnId=turn_b, messageId=message_b_id))
     await wait_until(lambda: adapter.handle_message.await_count == 3)
     assert a_chunk.message_id not in adapter._msg_kinds  # A's bookkeeping went with A
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "interrupted"}
 
     stopped_reply = await adapter.send(CHAT_ID, "Stopped.", reply_to=stop_event.message_id)
     assert stopped_reply.success is False
@@ -305,6 +308,26 @@ async def test_message_admitted_while_a_stopped_turn_unwinds_but_its_late_sends_
                                          "chatId": CHAT_ID, "msgId": b_reply.message_id,
                                          "content": "B's reply", "replyTo": message_b_id,
                                          "kind": "reply"}
+
+
+async def test_stop_and_a_new_message_in_one_read_still_end_the_stopped_turn(live):
+    # websockets hands over both frames without yielding, so B replaces the stopping A before the
+    # spawned stop task runs; that task then finds A replaced and returns. No Hermes run will ever
+    # end A (Hermes holds no session for it), so A's turn_end must be sent when B replaces it.
+    adapter, server = live
+    await start_turn(adapter, server)
+    turn_b, message_b_id = "e" * 32, "65c0000000000000000000d4"
+    await adapter._handle_frame(json.dumps({"v": 1, "type": "stop", "turnId": TURN_ID,
+                                            "chatId": CHAT_ID}))
+    await adapter._handle_frame(json.dumps({"v": 1, "type": "message", **message_frame(
+        turnId=turn_b, messageId=message_b_id)}))
+    assert await server.next_frame() == {"v": 1, "type": "turn_end", "turnId": TURN_ID,
+                                         "chatId": CHAT_ID, "reason": "interrupted"}
+    assert adapter.handle_message.await_count == 2
+    assert adapter._turns[CHAT_ID].turn_id == turn_b
+    probe = "abcdefabcdefabcdefabcdefabcdefab"
+    await server.push("message", **message_frame(turnId=probe, userId="64b0000000000000000000ff"))
+    assert (await server.next_frame())["turnId"] == probe  # A got exactly one turn_end
 
 
 async def test_message_is_refused_while_hermes_still_runs_the_stopped_turn(live):

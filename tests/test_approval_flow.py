@@ -247,6 +247,7 @@ async def test_message_admitted_while_stopped_drops_the_old_turns_approvals(live
     turn_b, message_b_id = "e" * 32, "65c0000000000000000000d4"
     await server.push("message", **message_frame(turnId=turn_b, messageId=message_b_id))
     await wait_until(lambda: adapter.handle_message.await_count == 3)
+    assert (await server.next_frame())["reason"] == "interrupted"  # A's turn_end
     assert (await decide(server, RID_1, "deny"))["reason"] == "expired"
 
 
