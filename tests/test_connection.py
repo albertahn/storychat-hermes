@@ -306,7 +306,8 @@ async def test_welcome_user_missing_from_the_allowlist_refuses_to_connect(monkey
         adapter = make_adapter()
         assert await adapter.connect() is False
         assert len(server.hellos) == 1  # the relay answered with welcome; the refusal is the plugin's
-        # Cross-plan contract 9: a normal close right after welcome, before any other frame.
+        # The relay must see an ordinary disconnect: a normal close right after welcome, before
+        # any other frame.
         await asyncio.wait_for(server.connections[-1].wait_closed(), 3)
         assert server.connections[-1].close_code == 1000
         assert server.frames.empty()

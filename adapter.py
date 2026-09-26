@@ -39,7 +39,7 @@ MAX_MESSAGE_LENGTH = 16384
 OPEN_TIMEOUT_S = 10.0
 WELCOME_TIMEOUT_S = 10.0
 LOCK_SCOPE = "storychat-hermes-token"
-# R-T14: _stop_ids is otherwise never pruned; capped so a late "Stopped" reply stays recognisable
+# _stop_ids is otherwise never pruned; capped so a late "Stopped" reply stays recognisable
 # for the newest MAX_STOP_IDS stops instead of growing forever on a long-running gateway.
 MAX_STOP_IDS = 256
 _OUTCOME_REASONS = {ProcessingOutcome.SUCCESS: "done", ProcessingOutcome.CANCELLED: "interrupted",
@@ -47,7 +47,7 @@ _OUTCOME_REASONS = {ProcessingOutcome.SUCCESS: "done", ProcessingOutcome.CANCELL
 # Spec §9.3: logged exactly, with the real id, when STORYCHAT_ALLOWED_USERS does not name the owner.
 NOT_ALLOWED_MSG = "STORYCHAT_ALLOWED_USERS must contain your StoryChat userId {user_id} — copy it from storychat.app/chat/hermes"
 PROXY_MSG = "proxy settings are invalid or need python-socks — check HTTPS_PROXY/WSS_PROXY/SOCKS_PROXY"
-# Why the per-turn recheck (R-T12) refused a turn; the README troubleshooting table quotes these.
+# Why the per-turn recheck refused a turn; the README troubleshooting table quotes these.
 TOOLSETS_CHANGED = "the StoryChat toolsets changed since startup"
 DISPLAY_CHANGED = "the StoryChat display settings changed since startup"
 RECHECK_UNVERIFIED = "could not verify the StoryChat toolsets/display settings"
@@ -524,10 +524,10 @@ class StoryChatAdapter(BasePlatformAdapter):
         await self._send_frame(protocol.turn_end(turn.turn_id, turn.chat_id, "error"))
 
     def _recheck_toolsets(self, turn_id: str, session_key: str) -> Optional[str]:
-        """R-T12: config.yaml is re-read every turn (gateway/run_turn.py _load_gateway_config), so a
-        config edit after startup could otherwise bypass the connect-time chat-only and display
-        self-checks. Loaded once so both checks see the same snapshot. Returns why the turn must be
-        refused, or None."""
+        """Hermes re-reads config.yaml every turn (gateway/run_turn.py _load_gateway_config), so a
+        config edit after startup could otherwise bypass the connect-time self-checks (spec §9.3).
+        Loaded once so every check sees the same snapshot. Returns why the turn must be refused, or
+        None."""
         chat_only = toolset_policy.is_chat_only(self._toolset_override)
         try:
             cfg = toolset_policy.load_gateway_config()

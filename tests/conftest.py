@@ -45,7 +45,7 @@ def _isolate(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     from storychat_hermes import adapter
     monkeypatch.setattr(adapter, "_opt_in_warned", False)
-    monkeypatch.setattr(adapter, "_memory_provider_warned", False, raising=False)
+    monkeypatch.setattr(adapter, "_memory_provider_warned", False)
     from storychat_hermes import approvals
     monkeypatch.setattr(approvals, "PIN_GUARD", approvals.PinGuard())
 

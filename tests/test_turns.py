@@ -91,7 +91,7 @@ async def test_hermes_gets_the_user_id_as_spelled_in_the_allowlist(monkeypatch, 
 
 async def test_turn_is_refused_when_the_toolsets_changed_since_startup(monkeypatch, live, caplog):
     # config.yaml is re-read every turn (gateway/run_turn.py _load_gateway_config), so a config
-    # edit after startup must not bypass the chat-only self-check (R-T12).
+    # edit after startup must not bypass the chat-only self-check (spec §9.3).
     adapter, server = live
     import hermes_cli.tools_config
     monkeypatch.setattr(hermes_cli.tools_config, "_get_platform_tools",
@@ -106,7 +106,7 @@ async def test_turn_is_refused_when_the_toolsets_changed_since_startup(monkeypat
 
 async def test_turn_is_refused_when_display_would_leak_progress_as_a_reply(monkeypatch, live, caplog):
     # Spec §9.2: a config edit after startup that turns tool_progress back on must not bypass the
-    # connect-time display self-check either (same R-T12 concern as the toolsets recheck above).
+    # connect-time display self-check either (config.yaml is re-read every turn, as above).
     adapter, server = live
     from storychat_hermes import toolset_policy
     monkeypatch.setattr(toolset_policy, "load_gateway_config", lambda: {})
@@ -459,7 +459,7 @@ async def test_stop_for_another_turn_is_ignored(live):
 
 
 async def test_message_admitted_while_a_stopped_turn_unwinds_but_its_late_sends_are_refused(live):
-    # A reviewer-found bug: once B is admitted, A's OWN late sends (its "Stopped." reply, or a
+    # Once B is admitted, A's OWN late sends (its "Stopped." reply, or a
     # reply_to its original messageId) must not attach to B's turnId/kind, or the backend would
     # save A's text as B's reply.
     adapter, server = live
@@ -594,7 +594,7 @@ async def test_stop_tracked_turns_skips_a_turn_that_already_ended(live):
 
 
 async def test_dispatch_stop_caps_stop_ids_at_256_entries():
-    # R-T14: _stop_ids is never pruned by Hermes' own lifecycle, so a long-running gateway must
+    # _stop_ids is never pruned by Hermes' own lifecycle, so a long-running gateway must
     # cap it itself, or every /stop ever sent would be kept in memory forever.
     from storychat_hermes.adapter import MAX_STOP_IDS, _Turn
     adapter = make_adapter()

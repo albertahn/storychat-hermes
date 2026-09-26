@@ -219,7 +219,7 @@ async def test_turn_end_drops_pending_approvals(live):
 
 
 async def test_correlation_miss_refuses_the_card_without_a_fifo_fallback(live):
-    # Reviewer-found bug: a PIN-approved decision must never resolve a DIFFERENT command than the
+    # A PIN-approved decision must never resolve a DIFFERENT command than the
     # one the card showed. If Hermes' own entry for this prompt already left its queue (e.g. the
     # turn was interrupted before the notify), correlation returns None; the card must never fall
     # back to a fresh uuid approvalId with a later FIFO resolve, which could approve or deny
@@ -238,7 +238,7 @@ async def test_correlation_miss_refuses_the_card_without_a_fifo_fallback(live):
 
 
 async def test_correlation_never_binds_to_an_unrelated_queued_entry(live):
-    # A reviewer-found bug: Hermes allows several pending approvals per session (parallel
+    # Hermes allows several pending approvals per session (parallel
     # subagents / execute_code, tools/approval_gateway_wait.py:5-8). If THIS card's own entry
     # already left Hermes' queue but a DIFFERENT command is still queued (not yet shown on any
     # card), the card must never bind to that other entry — approving "rm -rf build" must never
@@ -268,7 +268,7 @@ async def test_decision_resolves_only_the_cards_own_request_id(live):
 
 
 async def test_message_admitted_while_stopped_drops_the_old_turns_approvals(live):
-    # A reviewer-found bug: once B is admitted over a stopped A, A's on_processing_complete never
+    # Once B is admitted over a stopped A, A's on_processing_complete never
     # runs (Hermes treats that turn as superseded), so without this cleanup A's approvalId would
     # stay answerable forever, invisible to StoryChat's own turn/approval UI for the new turn.
     adapter, server, queue = live

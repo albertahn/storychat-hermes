@@ -113,10 +113,9 @@ def _logger_error_format(func, keyword: str, level: str = "error") -> str:
     raise AssertionError(f"no logger.{level}(...) call containing {keyword!r} found in {func!r}")
 
 
-def test_troubleshooting_carries_the_refusals_added_after_the_plan():
-    # Pins every troubleshooting row added after the plan (task 18 controller rulings 3-5): the
-    # unknown-toolset, clarify and display refusals, the per-turn refusal, and the "progress
-    # messages stay off" prose. Each fixed string is derived from the module that raises it —
+def test_troubleshooting_carries_the_config_refusals():
+    # Pins the troubleshooting rows for the unknown-toolset, clarify and display refusals, every
+    # per-turn refusal, and the "progress messages stay off" prose. Each fixed string is derived from the module that raises it —
     # either a real raised exception or the AST of the logger.error(...) call — rather than
     # copied as a literal, so a change to the source message fails this test instead of letting
     # the README silently drift from the code.
