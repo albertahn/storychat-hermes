@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from support import TOKEN, USER_ID, make_adapter
+from support import TOKEN, USER_ID, FakeStoryChat, make_adapter, register_storychat_platform
 
 README = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
 
@@ -39,6 +39,9 @@ display:
       tool_progress: off
       long_running_notifications: off
       interim_assistant_messages: false
+platform_toolsets:
+  storychat: [no_mcp]        # Chat-only fallback. The plugin replaces this list at runtime;
+                             # opt into tools with STORYCHAT_TOOLSETS in ~/.hermes/.env, not here.
 """
 
 
@@ -48,6 +51,73 @@ def test_env_block_is_exact():
 
 def test_config_block_is_exact():
     assert f"```yaml\n{CONFIG_BLOCK}```" in README
+
+
+def load_config_block_as_the_gateway_does(tmp_path):
+    # gateway/run.py _load_gateway_config returns {} on any parse error, so callers compare it whole.
+    from gateway.run import _load_gateway_config
+    path = tmp_path / "config.yaml"
+    path.write_text(CONFIG_BLOCK, encoding="utf-8")
+    return _load_gateway_config(path)
+
+
+def test_the_config_block_parses_as_the_gateway_loads_it(tmp_path):
+    assert load_config_block_as_the_gateway_does(tmp_path) == {
+        "streaming": {"enabled": True},
+        "display": {"platforms": {"storychat": {
+            "tool_progress": False, "long_running_notifications": False,
+            "interim_assistant_messages": False}}},
+        "platform_toolsets": {"storychat": ["no_mcp"]}}
+
+
+@pytest.mark.parametrize("extra", [{}, {"mcp_servers": {"github": {"command": "npx",
+                                                                  "args": ["github-mcp"]}}}])
+def test_the_config_block_alone_keeps_storychat_chat_only(monkeypatch, tmp_path, caplog, extra):
+    # Resolved with no adapter override, as Hermes would if it ever skipped toolsets_for_source.
+    import hermes_cli.tools_config as tools_config
+
+    from storychat_hermes import toolset_policy
+    register_storychat_platform()
+    config = {**load_config_block_as_the_gateway_does(tmp_path), **extra}
+    monkeypatch.setattr(tools_config, "_warned_invalid_platform_toolsets", set())
+    caplog.set_level(logging.WARNING, logger=tools_config.logger.name)
+    assert toolset_policy.leaked_toolsets(tools_config._get_platform_tools(config, "storychat")) == []
+    # No new warning: only the no_mcp line the plugin's own override already makes Hermes log.
+    (line,) = [r.getMessage() for r in caplog.records if r.name == tools_config.logger.name]
+    assert "no_mcp" in line and line in README
+
+
+def test_the_config_check_calls_no_mcp_unknown_as_the_readme_says(tmp_path):
+    # hermes_cli/config.py _warn_invalid_platform_toolsets, run by `hermes config migrate` and by
+    # `hermes update` when it migrates the config.
+    from hermes_cli.toolset_scope import toolset_allowed_for_platform
+    from hermes_cli.toolset_validation import validate_platform_toolsets
+    from toolsets import validate_toolset
+    config = load_config_block_as_the_gateway_does(tmp_path)
+    warnings = validate_platform_toolsets(config["platform_toolsets"], validate_toolset,
+                                          toolset_allowed_for_platform)
+    unknown = "platform 'storychat' references unknown toolset 'no_mcp'"
+    assert any(w.startswith(unknown) for w in warnings)
+    assert f"`{unknown}`" in README
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("toolsets", "effective"), [("", []), ("web", ["web"])])
+async def test_the_plugin_override_replaces_the_config_block_list(monkeypatch, storychat_env, tmp_path,
+                                                                  toolsets, effective):
+    from gateway.run import _load_gateway_config
+
+    from storychat_hermes import toolset_policy
+    load_config_block_as_the_gateway_does(tmp_path)
+    monkeypatch.setattr(toolset_policy, "load_gateway_config",
+                        lambda: _load_gateway_config(tmp_path / "config.yaml"))
+    monkeypatch.setenv("STORYCHAT_TOOLSETS", toolsets)
+    async with FakeStoryChat() as server:
+        monkeypatch.setenv("STORYCHAT_URL", server.url)
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        await adapter.disconnect()
+    assert server.hellos[0]["effectiveToolsets"] == effective
 
 
 def test_mentions_the_session_age_setting():

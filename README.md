@@ -59,9 +59,9 @@ STORYCHAT_TOOLSETS=
 ### 4. Turn on streaming in `~/.hermes/config.yaml`
 
 Merge these keys into your existing `~/.hermes/config.yaml` instead of pasting a second
-`streaming:` or `display:` section, because YAML keeps only the last copy of a key and the
-settings in the earlier section would be silently lost. Keep the `display.platforms.storychat`
-settings exactly as shown — see "Progress messages stay off" below.
+`streaming:`, `display:` or `platform_toolsets:` section, because YAML keeps only the last copy of
+a key and the settings in the earlier section would be silently lost. Keep the
+`display.platforms.storychat` settings exactly as shown — see "Progress messages stay off" below.
 
 ```yaml
 streaming:
@@ -74,7 +74,17 @@ display:
       tool_progress: off
       long_running_notifications: off
       interim_assistant_messages: false
+platform_toolsets:
+  storychat: [no_mcp]        # Chat-only fallback. The plugin replaces this list at runtime;
+                             # opt into tools with STORYCHAT_TOOLSETS in ~/.hermes/.env, not here.
 ```
+
+The `platform_toolsets` line keeps StoryChat chat-only even if Hermes ever resolves its toolsets
+without the plugin. Tools are opted into with `STORYCHAT_TOOLSETS` in `~/.hermes/.env` (see "Tools,
+approvals and the PIN" below), not by editing this list. `hermes config migrate` (and
+`hermes update` when it migrates your config) reports
+`platform 'storychat' references unknown toolset 'no_mcp'` and that storychat has no valid
+toolsets; that is expected, so leave the line as it is.
 
 ### 5. Restart the gateway
 
