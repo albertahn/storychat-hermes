@@ -191,6 +191,45 @@ async def deliver_platform_notice(adapter, source, content):
     await GatewayRunner._deliver_platform_notice(runner, source, content)
 
 
+async def test_gateway_warnings_are_status(live):
+    # gateway/run_turn.py sends context-hygiene failures ("Shortening the conversation history
+    # failed…") through BasePlatformAdapter.emit_warning, a plain send() with no marker.
+    adapter, server = live
+    await start_turn(adapter, server)
+    result = await adapter.emit_warning(CHAT_ID, "⚠️ Shortening the conversation history failed.")
+    assert result.success is True
+    frame = await server.next_frame()
+    assert (frame["type"], frame["turnId"], frame["kind"]) == ("send", TURN_ID, "status")
+    media = await adapter.emit_media_warning(CHAT_ID, "(image could not be sent)")
+    assert media.success is True
+    assert (await server.next_frame())["kind"] == "status"
+
+
+async def test_suppressed_gateway_warnings_are_not_sent(monkeypatch, live):
+    adapter, server = live
+    await start_turn(adapter, server)
+    monkeypatch.setattr(adapter, "warning_notifications_enabled", lambda *a, **kw: False)
+    assert await adapter.emit_warning(CHAT_ID, "⚠️ Shortening the conversation history failed.") is None
+    assert server.frames.empty()
+
+
+async def test_the_suspended_session_reset_notice_is_status_and_the_turn_goes_on(live):
+    # gateway/run_turn.py _hmwa_deliver_auto_reset_notice: a plain send() before the real reply.
+    from gateway.run import GatewayRunner
+    adapter, server = live
+    event = await start_turn(adapter, server)
+    runner = SimpleNamespace(_delivery_adapter_for=lambda s: adapter,
+                             _reset_notice_session_info=lambda s: None,
+                             _thread_metadata_for_source=lambda s: None)
+    await GatewayRunner._hmwa_deliver_auto_reset_notice(
+        runner, SimpleNamespace(auto_reset_reason="suspended"), event.source, [])
+    frame = await server.next_frame()
+    assert (frame["type"], frame["kind"]) == ("send", "status")
+    assert frame["content"].startswith("◐ Session reset")
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert (await server.next_frame())["reason"] == "done"
+
+
 @pytest.mark.parametrize("configured", ["public", "pubilc"])
 async def test_platform_notices_are_status_even_when_configured_public(monkeypatch, storychat_env,
                                                                        configured):

@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Optional
 
 FAILURE = "failure"  # the turn failed or never ran: status, and the turn ends with "error"
+NOTICE = "notice"  # a Hermes notice next to a real reply: status only
 
 # Hermes ends these turns as SUCCESS (its error text was delivered), so the relay would otherwise
 # get turn_end "done" and keep the error text as the reply.
@@ -31,10 +32,15 @@ _FAILURE_PREFIXES = (
     # agent/conversation_loop.py _billing_terminal_label
     "Billing or credits exhausted:",
 )
+_NOTICE_PREFIXES = (
+    # gateway/run_turn.py _hmwa_deliver_auto_reset_notice: Hermes reset a session suspended by
+    # repeated shutdowns before this turn; the real reply follows
+    "◐ Session reset after being stopped.",
+)
 
 
 def classify(content: str) -> Optional[str]:
-    """``FAILURE`` for Hermes' failed-turn copy, None for text that may be the character's reply."""
+    """``FAILURE`` or ``NOTICE`` for Hermes' own copy, None for text that may be the character's reply."""
     from agent.turn_failure_copy import FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
     from gateway.run import _CONTEXT_OVERFLOW_REPLY
     text = content.strip()
@@ -42,4 +48,4 @@ def classify(content: str) -> Optional[str]:
             # gateway/run_turn.py _hmwa_add_failed_turn_notice ends every failed turn's reply so
             or text.endswith((FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE))):
         return FAILURE
-    return None
+    return NOTICE if text.startswith(_NOTICE_PREFIXES) else None

@@ -544,6 +544,14 @@ class StoryChatAdapter(BasePlatformAdapter):
         """Operational notices (see notice_delivery in __init__) go out as status."""
         return await self._send_text(chat_id, content, reply_to, metadata, force_status=True)
 
+    async def emit_warning(self, chat_id: str, content: str, *, reply_to=None, metadata=None,
+                           logical_platform=None) -> Optional[SendResult]:
+        """Gateway diagnostics (context-hygiene failures, media fallbacks: base.py emit_warning) are
+        never the character's reply. None means suppressed by the display settings, as in Hermes."""
+        if not self.warning_notifications_enabled(logical_platform, chat_id=chat_id, metadata=metadata):
+            return None
+        return await self._send_text(chat_id, content, reply_to, metadata, force_status=True)
+
     async def _send_text(self, chat_id: str, content: str, reply_to: Optional[str],
                          metadata: Optional[Dict[str, Any]], *, force_status: bool) -> SendResult:
         turn = self._turns.get(chat_id)
