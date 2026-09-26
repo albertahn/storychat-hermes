@@ -651,6 +651,9 @@ class StoryChatAdapter(BasePlatformAdapter):
         turn = self._turns.get(prompt.chat_id)
         if turn is None or self._ws is None:
             return SendResult(success=False, error="no active StoryChat turn for this chat")
+        if turn.stop_requested:
+            # After Stop only turn_end counts (spec §8): no new card; Hermes' /stop ends the wait.
+            return SendResult(success=False, error="the StoryChat turn is stopping")
         request_id = correlate_request_id(
             prompt.command, prompt.description,
             hermes_approval.list_gateway_approvals(prompt.session_key),
@@ -693,6 +696,8 @@ class StoryChatAdapter(BasePlatformAdapter):
                 pin: Optional[str]) -> Tuple[bool, Optional[str], Optional[int]]:
         from tools import approval as hermes_approval
         entry = self._approvals.find(approval_id)
+        if entry is None and self._approvals.resolved_choice(approval_id) is not None:
+            return self._repeated_decision(approval_id, choice, pin)
         if entry is None or not entry.request_id:
             # Without Hermes' request_id, resolve_gateway_approval would pick its OLDEST entry.
             return False, "expired", None
@@ -713,7 +718,23 @@ class StoryChatAdapter(BasePlatformAdapter):
         count = hermes_approval.resolve_gateway_approval(
             entry.session_key, choice, request_id=entry.request_id)
         self._approvals.remove(approval_id)
-        return (True, None, None) if count > 0 else (False, "expired", None)
+        if count <= 0:
+            return False, "expired", None
+        self._approvals.mark_resolved(approval_id, choice)
+        return True, None, None
+
+    def _repeated_decision(self, approval_id: str, choice: str,
+                           pin: Optional[str]) -> Tuple[bool, Optional[str], Optional[int]]:
+        """The relay stops waiting for an ack after 10 s, so a slow ack can make the user repeat a
+        decision Hermes already applied. Answer with what happened, not "expired" (shown as
+        "command was not run"); a different choice can no longer be applied."""
+        if self._approvals.resolved_choice(approval_id) != choice:
+            return False, None, None
+        if choice != "deny":
+            reason, attempts_left = self._pin_guard.check(self._settings.approval_pin, pin)
+            if reason is not None:
+                return False, reason, attempts_left
+        return True, None, None
 
 
 # ── plugin registration (spec §9.1) ─────────────────────────────────────────

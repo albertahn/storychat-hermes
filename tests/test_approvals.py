@@ -27,6 +27,21 @@ def test_missing_pin_counts_as_a_miss_and_unset_pin_is_reported():
     assert PinGuard().check("", PIN) == ("pin_not_configured", None)
 
 
+def test_the_book_remembers_the_newest_resolved_approvals():
+    from storychat_hermes.approvals import MAX_RESOLVED_APPROVALS
+    book = ApprovalBook()
+    ids = [f"{i:032x}" for i in range(MAX_RESOLVED_APPROVALS + 1)]
+    for approval_id in ids:
+        book.mark_resolved(approval_id, "deny")
+    book.mark_resolved(ids[1], "once")  # a repeat refreshes the entry
+    book.mark_resolved("f" * 32, "deny")
+    assert book.resolved_choice(ids[0]) is None and book.resolved_choice(ids[2]) is None
+    assert book.resolved_choice(ids[1]) == "once"
+    assert book.resolved_choice(ids[-1]) == "deny"
+    book.clear()  # the socket dropped: pending approvals go, the record of resolved ones stays
+    assert book.resolved_choice(ids[1]) == "once"
+
+
 def test_book_keeps_arrival_order_and_removes():
     book = ApprovalBook()
     book.add(entry("a" * 32, "r1"))

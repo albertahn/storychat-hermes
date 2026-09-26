@@ -8,10 +8,12 @@ adapter being rebuilt by Hermes' reconnect watcher and clears only when the gate
 from __future__ import annotations
 
 import hmac
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 MAX_PIN_MISSES = 5
+MAX_RESOLVED_APPROVALS = 64
 
 
 class PinGuard:
@@ -56,6 +58,9 @@ class ApprovalBook:
 
     def __init__(self) -> None:
         self._by_session: Dict[str, List[PendingApproval]] = {}
+        # approvalId -> the choice Hermes applied, newest last. Not pending state, so clear()
+        # keeps it: a repeated decision is answered with what already happened.
+        self._resolved: "OrderedDict[str, str]" = OrderedDict()
 
     def add(self, entry: PendingApproval) -> None:
         self._by_session[entry.session_key] = [*self._by_session.get(entry.session_key, []), entry]
@@ -97,6 +102,15 @@ class ApprovalBook:
 
     def clear(self) -> None:
         self._by_session = {}
+
+    def mark_resolved(self, approval_id: str, choice: str) -> None:
+        self._resolved[approval_id] = choice
+        self._resolved.move_to_end(approval_id)
+        while len(self._resolved) > MAX_RESOLVED_APPROVALS:
+            self._resolved.popitem(last=False)
+
+    def resolved_choice(self, approval_id: str) -> Optional[str]:
+        return self._resolved.get(approval_id)
 
 
 def correlate_request_id(command: str, description: str, live: Iterable[dict],

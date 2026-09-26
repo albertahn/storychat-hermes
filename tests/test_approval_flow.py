@@ -116,7 +116,42 @@ async def test_correct_pin_approves_once(live):
     await request(adapter, server, queue, RID_1)
     assert (await decide(server, RID_1, "once", PIN))["resolved"] is True
     assert queue.resolved == [(SESSION, "once", RID_1)]
-    assert (await decide(server, RID_1, "once", PIN))["reason"] == "expired"
+
+
+async def test_a_repeated_decision_for_a_resolved_approval_answers_resolved(live):
+    # The relay gives up waiting for an ack after 10 s; the user then repeats the decision. The
+    # command already ran, so "expired" (shown as "command was not run") would be false.
+    adapter, server, queue = live
+    await request(adapter, server, queue, RID_1)
+    assert (await decide(server, RID_1, "once", PIN))["resolved"] is True
+    assert await decide(server, RID_1, "once", PIN) == {"v": 1, "type": "approval_ack",
+                                                         "approvalId": RID_1, "resolved": True}
+    assert queue.resolved == [(SESSION, "once", RID_1)]  # Hermes was asked only once
+
+
+async def test_a_repeat_with_another_choice_or_a_wrong_pin_is_not_resolved(live):
+    adapter, server, queue = live
+    await request(adapter, server, queue, RID_1)
+    assert (await decide(server, RID_1, "once", PIN))["resolved"] is True
+    assert await decide(server, RID_1, "deny") == {"v": 1, "type": "approval_ack",
+                                                   "approvalId": RID_1, "resolved": False}
+    wrong = await decide(server, RID_1, "once", "000000")
+    assert (wrong["resolved"], wrong["reason"]) == (False, "bad_pin")
+    assert queue.resolved == [(SESSION, "once", RID_1)]
+
+
+async def test_no_approval_card_while_the_turn_is_stopping(live):
+    # Once the user pressed Stop, only turn_end counts (spec §8): a new card must not reach them.
+    adapter, server, queue = live
+    event = adapter.handle_message.await_args.args[0]
+    adapter._active_sessions[adapter._event_session_key(event)] = object()
+    await server.push("stop", turnId=TURN_ID, chatId=CHAT_ID)
+    await wait_until(lambda: adapter.handle_message.await_count == 2)
+    queue.add(RID_1, "rm -rf build", "recursive delete")
+    result = await adapter._send_exec_approval_prompt(prompt())
+    assert result.success is False
+    assert server.frames.empty()
+    assert adapter._approvals.head(SESSION) is None
 
 
 async def test_wrong_pins_count_down_then_lock(live):
